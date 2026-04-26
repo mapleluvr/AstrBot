@@ -24,8 +24,8 @@ from astrbot.core.db.po import (
     ProviderStat,
     SessionProjectRelation,
     Stats,
-    WebChatThread,
     SubAgentInstance,
+    WebChatThread,
 )
 
 

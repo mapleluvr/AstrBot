@@ -26,8 +26,8 @@ from astrbot.core.db.po import (
     ProviderStat,
     SessionProjectRelation,
     SQLModel,
-    WebChatThread,
     SubAgentInstance,
+    WebChatThread,
 )
 from astrbot.core.db.po import (
     Platform as DeprecatedPlatformStat,
