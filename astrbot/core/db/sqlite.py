@@ -27,6 +27,7 @@ from astrbot.core.db.po import (
     SessionProjectRelation,
     SQLModel,
     WebChatThread,
+    SubAgentInstance,
 )
 from astrbot.core.db.po import (
     Platform as DeprecatedPlatformStat,
@@ -238,6 +239,210 @@ class SQLiteDatabase(BaseDatabase):
                 return record
 
     # ====
+    # Sub-agent Instance Management
+    # ====
+
+    async def create_subagent_instance(
+        self,
+        *,
+        umo: str,
+        scope_type: str,
+        scope_id: str,
+        name: str,
+        preset_name: str,
+        provider_id: str | None = None,
+        persona_id: str | None = None,
+        system_prompt: str | None = None,
+        system_prompt_delta: str | None = None,
+        tools: list | None = None,
+        skills: list | None = None,
+        history: list | None = None,
+        max_persisted_turns: int | None = None,
+        max_persisted_tokens: int | None = None,
+    ) -> SubAgentInstance:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                instance = SubAgentInstance(
+                    umo=umo,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    name=name,
+                    preset_name=preset_name,
+                    provider_id=provider_id,
+                    persona_id=persona_id,
+                    system_prompt=system_prompt,
+                    system_prompt_delta=system_prompt_delta,
+                    tools=tools,
+                    skills=skills,
+                    history=history or [],
+                    max_persisted_turns=max_persisted_turns,
+                    max_persisted_tokens=max_persisted_tokens,
+                )
+                session.add(instance)
+                await session.flush()
+                await session.refresh(instance)
+                return instance
+
+    async def get_subagent_instance_by_id(
+        self,
+        instance_id: str,
+    ) -> SubAgentInstance | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(SubAgentInstance).where(
+                    col(SubAgentInstance.instance_id) == instance_id,
+                ),
+            )
+            return result.scalar_one_or_none()
+
+    async def get_subagent_instance_by_name(
+        self,
+        *,
+        umo: str,
+        scope_type: str,
+        scope_id: str,
+        name: str,
+    ) -> SubAgentInstance | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(SubAgentInstance).where(
+                    col(SubAgentInstance.umo) == umo,
+                    col(SubAgentInstance.scope_type) == scope_type,
+                    col(SubAgentInstance.scope_id) == scope_id,
+                    col(SubAgentInstance.name) == name,
+                ),
+            )
+            return result.scalar_one_or_none()
+
+    async def list_subagent_instances(
+        self,
+        *,
+        umo: str,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+    ) -> list[SubAgentInstance]:
+        async with self.get_db() as session:
+            session: AsyncSession
+            query = select(SubAgentInstance).where(col(SubAgentInstance.umo) == umo)
+            if scope_type is not None:
+                query = query.where(col(SubAgentInstance.scope_type) == scope_type)
+            if scope_id is not None:
+                query = query.where(col(SubAgentInstance.scope_id) == scope_id)
+            query = query.order_by(desc(SubAgentInstance.created_at))
+            result = await session.execute(query)
+            return list(result.scalars().all())
+
+    async def save_subagent_history(
+        self,
+        instance_id: str,
+        *,
+        history: list[dict],
+        token_usage: int | None,
+        begin_dialogs_injected: bool,
+        expected_version: int,
+    ) -> SubAgentInstance | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                values = {
+                    "history": history,
+                    "begin_dialogs_injected": begin_dialogs_injected,
+                    "version": expected_version + 1,
+                }
+                if token_usage is not None:
+                    values["token_usage"] = token_usage
+
+                result = await session.execute(
+                    update(SubAgentInstance)
+                    .where(
+                        col(SubAgentInstance.instance_id) == instance_id,
+                        col(SubAgentInstance.version) == expected_version,
+                    )
+                    .values(**values)
+                    .execution_options(synchronize_session="fetch"),
+                )
+                if result.rowcount == 0:
+                    return None
+                loaded = await session.execute(
+                    select(SubAgentInstance).where(
+                        col(SubAgentInstance.instance_id) == instance_id,
+                    ),
+                )
+                return loaded.scalar_one_or_none()
+
+    async def update_subagent_instance(
+        self,
+        instance_id: str,
+        **kwargs,
+    ) -> SubAgentInstance | None:
+        protected_fields = {
+            "id",
+            "instance_id",
+            "history",
+            "token_usage",
+            "version",
+            "begin_dialogs_injected",
+        }
+        invalid_fields = protected_fields.intersection(kwargs)
+        if invalid_fields:
+            raise ValueError(
+                "Cannot update protected subagent instance fields: "
+                f"{', '.join(sorted(invalid_fields))}",
+            )
+
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                if kwargs:
+                    await session.execute(
+                        update(SubAgentInstance)
+                        .where(col(SubAgentInstance.instance_id) == instance_id)
+                        .values(**kwargs)
+                        .execution_options(synchronize_session="fetch"),
+                    )
+                result = await session.execute(
+                    select(SubAgentInstance).where(
+                        col(SubAgentInstance.instance_id) == instance_id,
+                    ),
+                )
+                return result.scalar_one_or_none()
+
+    async def delete_subagent_instance(self, instance_id: str) -> None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                await session.execute(
+                    delete(SubAgentInstance).where(
+                        col(SubAgentInstance.instance_id) == instance_id,
+                    ),
+                )
+
+    async def delete_subagent_instances_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                await session.execute(
+                    delete(SubAgentInstance).where(
+                        col(SubAgentInstance.scope_type) == "conversation",
+                        col(SubAgentInstance.scope_id) == conversation_id,
+                    ),
+                )
+
+    async def delete_subagent_instances_for_session(self, umo: str) -> None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                await session.execute(
+                    delete(SubAgentInstance).where(col(SubAgentInstance.umo) == umo),
+                )
+
+    # ====
     # Conversation Management
     # ====
 
@@ -385,15 +590,16 @@ class SQLiteDatabase(BaseDatabase):
                 await session.execute(query)
         return await self.get_conversation_by_id(cid)
 
-    async def delete_conversation(self, cid) -> None:
+    async def delete_conversation(self, cid) -> bool:
         async with self.get_db() as session:
             session: AsyncSession
             async with session.begin():
-                await session.execute(
+                result = await session.execute(
                     delete(ConversationV2).where(
                         col(ConversationV2.conversation_id) == cid,
                     ),
                 )
+                return result.rowcount > 0
 
     async def delete_conversations_by_user_id(self, user_id: str) -> None:
         async with self.get_db() as session:

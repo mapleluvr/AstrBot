@@ -7,6 +7,7 @@ from astrbot import logger
 from astrbot.core.agent.agent import Agent
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
+from astrbot.core.subagent_runtime import SubAgentPreset
 
 if TYPE_CHECKING:
     from astrbot.core.persona_mgr import PersonaManager
@@ -25,6 +26,7 @@ class SubAgentOrchestrator:
         self._tool_mgr = tool_mgr
         self._persona_mgr = persona_mgr
         self.handoffs: list[HandoffTool] = []
+        self.presets: list[SubAgentPreset] = []
 
     async def reload_from_config(self, cfg: dict[str, Any]) -> None:
         from astrbot.core.astr_agent_context import AstrAgentContext
@@ -35,6 +37,7 @@ class SubAgentOrchestrator:
             return
 
         handoffs: list[HandoffTool] = []
+        presets: list[SubAgentPreset] = []
         for item in agents:
             if not isinstance(item, dict):
                 continue
@@ -61,7 +64,16 @@ class SubAgentOrchestrator:
             if provider_id is not None:
                 provider_id = str(provider_id).strip() or None
             tools = item.get("tools", [])
+            skills = item.get("skills", [])
             begin_dialogs = None
+            runtime_mode = str(item.get("runtime_mode") or "handoff").strip()
+            if runtime_mode not in {"handoff", "persistent"}:
+                logger.warning(
+                    "Unsupported subagent runtime_mode %s for %s, fallback to handoff.",
+                    runtime_mode,
+                    name,
+                )
+                runtime_mode = "handoff"
 
             if persona_data:
                 prompt = str(persona_data.get("prompt", "")).strip()
@@ -71,6 +83,7 @@ class SubAgentOrchestrator:
                     persona_data.get("_begin_dialogs_processed")
                 )
                 tools = persona_data.get("tools")
+                skills = persona_data.get("skills")
                 if public_description == "" and prompt:
                     public_description = prompt[:120]
             if tools is None:
@@ -79,6 +92,30 @@ class SubAgentOrchestrator:
                 tools = []
             else:
                 tools = [str(t).strip() for t in tools if str(t).strip()]
+
+            if skills is None:
+                skills = None
+            elif not isinstance(skills, list):
+                skills = []
+            else:
+                skills = [str(s).strip() for s in skills if str(s).strip()]
+
+            presets.append(
+                SubAgentPreset(
+                    name=name,
+                    runtime_mode=runtime_mode,
+                    instructions=instructions,
+                    public_description=public_description or None,
+                    provider_id=provider_id,
+                    persona_id=persona_id,
+                    tools=tools,
+                    skills=skills,
+                    begin_dialogs=begin_dialogs,
+                )
+            )
+
+            if runtime_mode != "handoff":
+                continue
 
             agent = Agent[AstrAgentContext](
                 name=name,
@@ -102,3 +139,4 @@ class SubAgentOrchestrator:
             logger.info(f"Registered subagent handoff tool: {handoff.name}")
 
         self.handoffs = handoffs
+        self.presets = presets

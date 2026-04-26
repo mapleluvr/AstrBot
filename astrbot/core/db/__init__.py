@@ -25,6 +25,7 @@ from astrbot.core.db.po import (
     SessionProjectRelation,
     Stats,
     WebChatThread,
+    SubAgentInstance,
 )
 
 
@@ -123,6 +124,99 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
+    async def create_subagent_instance(
+        self,
+        *,
+        umo: str,
+        scope_type: str,
+        scope_id: str,
+        name: str,
+        preset_name: str,
+        provider_id: str | None = None,
+        persona_id: str | None = None,
+        system_prompt: str | None = None,
+        system_prompt_delta: str | None = None,
+        tools: list | None = None,
+        skills: list | None = None,
+        history: list | None = None,
+        max_persisted_turns: int | None = None,
+        max_persisted_tokens: int | None = None,
+    ) -> SubAgentInstance:
+        """Create a persistent sub-agent instance."""
+        ...
+
+    @abc.abstractmethod
+    async def get_subagent_instance_by_id(
+        self,
+        instance_id: str,
+    ) -> SubAgentInstance | None:
+        """Get a sub-agent instance by its instance ID."""
+        ...
+
+    @abc.abstractmethod
+    async def get_subagent_instance_by_name(
+        self,
+        *,
+        umo: str,
+        scope_type: str,
+        scope_id: str,
+        name: str,
+    ) -> SubAgentInstance | None:
+        """Get a sub-agent instance by scope and name."""
+        ...
+
+    @abc.abstractmethod
+    async def list_subagent_instances(
+        self,
+        *,
+        umo: str,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+    ) -> list[SubAgentInstance]:
+        """List persistent sub-agent instances."""
+        ...
+
+    @abc.abstractmethod
+    async def save_subagent_history(
+        self,
+        instance_id: str,
+        *,
+        history: list[dict],
+        token_usage: int | None,
+        begin_dialogs_injected: bool,
+        expected_version: int,
+    ) -> SubAgentInstance | None:
+        """Save sub-agent history with optimistic version checking."""
+        ...
+
+    @abc.abstractmethod
+    async def update_subagent_instance(
+        self,
+        instance_id: str,
+        **kwargs,
+    ) -> SubAgentInstance | None:
+        """Update a sub-agent instance."""
+        ...
+
+    @abc.abstractmethod
+    async def delete_subagent_instance(self, instance_id: str) -> None:
+        """Delete a sub-agent instance."""
+        ...
+
+    @abc.abstractmethod
+    async def delete_subagent_instances_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> None:
+        """Delete sub-agent instances scoped to a conversation."""
+        ...
+
+    @abc.abstractmethod
+    async def delete_subagent_instances_for_session(self, umo: str) -> None:
+        """Delete sub-agent instances for a session UMO."""
+        ...
+
+    @abc.abstractmethod
     async def get_conversations(
         self,
         user_id: str | None = None,
@@ -188,8 +282,8 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def delete_conversation(self, cid: str) -> None:
-        """Delete a conversation by its ID."""
+    async def delete_conversation(self, cid: str) -> bool:
+        """Delete a conversation by its ID. Returns whether a row was deleted."""
         ...
 
     @abc.abstractmethod

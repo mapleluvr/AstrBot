@@ -6,7 +6,9 @@ import sys
 import uuid
 import zipfile
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -195,6 +197,133 @@ async def test_subagent_config_accepts_default_persona(
         assert get_data["status"] == "ok"
         assert get_data["data"]["agents"][0]["persona_id"] == "default"
     finally:
+        await test_client.post(
+            "/api/subagent/config",
+            json=old_cfg,
+            headers=authenticated_header,
+        )
+
+
+@pytest.mark.asyncio
+async def test_subagent_config_preserves_runtime_schema_fields(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+):
+    test_client = app.test_client()
+    old_cfg = copy.deepcopy(
+        core_lifecycle_td.astrbot_config.get("subagent_orchestrator", {})
+    )
+    payload = {
+        "main_enable": True,
+        "remove_main_duplicate_tools": True,
+        "agents": [
+            {
+                "name": "researcher",
+                "persona_id": "default",
+                "public_description": "research helper",
+                "system_prompt": "",
+                "enabled": True,
+                "provider_id": None,
+                "runtime_mode": "persistent",
+                "skills": ["summarize"],
+                "tools": ["web_search"],
+                "begin_dialogs": [{"role": "assistant", "content": "ready"}],
+                "runtime": {"max_turns": 3},
+                "future_agent_field": {"preserve": True},
+            }
+        ],
+        "future_top_level_field": {"enabled": True},
+    }
+
+    try:
+        response = await test_client.post(
+            "/api/subagent/config",
+            json=payload,
+            headers=authenticated_header,
+        )
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data["status"] == "ok"
+
+        get_response = await test_client.get(
+            "/api/subagent/config", headers=authenticated_header
+        )
+        assert get_response.status_code == 200
+        get_data = await get_response.get_json()
+        assert get_data["status"] == "ok"
+        agent = get_data["data"]["agents"][0]
+        assert agent["runtime_mode"] == "persistent"
+        assert agent["skills"] == ["summarize"]
+        assert agent["tools"] == ["web_search"]
+        assert agent["begin_dialogs"] == [{"role": "assistant", "content": "ready"}]
+        assert agent["runtime"] == {"max_turns": 3}
+        assert agent["future_agent_field"] == {"preserve": True}
+        assert get_data["data"]["future_top_level_field"] == {"enabled": True}
+    finally:
+        await test_client.post(
+            "/api/subagent/config",
+            json=old_cfg,
+            headers=authenticated_header,
+        )
+
+
+def test_subagent_page_serialization_preserves_runtime_schema_fields():
+    page = (
+        Path(os.getcwd()) / "dashboard" / "src" / "views" / "SubAgentPage.vue"
+    ).read_text(encoding="utf-8")
+
+    assert "runtime_mode?: string" in page
+    assert "skills?: string[]" in page
+    assert "runtime_mode: (a?.runtime_mode ?? 'handoff').toString()" in page
+    assert "skills: Array.isArray(a?.skills) ? a.skills.map" in page
+    assert "runtime_mode: agent.runtime_mode ?? 'handoff'" in page
+    assert "skills: agent.skills ?? []" in page
+    assert "...raw" in page
+    assert "...a" in page
+    assert "const { __key, ...agentConfig } = agent" in page
+    assert "runtimeModeOptions" in page
+    assert "availableSkillItems" in page
+    assert "fetchAvailableSkills" in page
+
+
+@pytest.mark.asyncio
+async def test_subagent_config_save_reloads_orchestrator_and_runtime_manager(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+):
+    test_client = app.test_client()
+    old_cfg = copy.deepcopy(
+        core_lifecycle_td.astrbot_config.get("subagent_orchestrator", {})
+    )
+    old_orchestrator = getattr(core_lifecycle_td, "subagent_orchestrator", None)
+    old_runtime_manager = getattr(core_lifecycle_td, "subagent_runtime_manager", None)
+    payload = {
+        "main_enable": True,
+        "remove_main_duplicate_tools": False,
+        "agents": [],
+    }
+    orchestrator = SimpleNamespace(reload_from_config=AsyncMock())
+    runtime_manager = SimpleNamespace(reload_from_config=AsyncMock())
+    core_lifecycle_td.subagent_orchestrator = orchestrator
+    core_lifecycle_td.subagent_runtime_manager = runtime_manager
+
+    try:
+        response = await test_client.post(
+            "/api/subagent/config",
+            json=payload,
+            headers=authenticated_header,
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data["status"] == "ok"
+        orchestrator.reload_from_config.assert_awaited_once_with(payload)
+        runtime_manager.reload_from_config.assert_awaited_once_with(payload)
+    finally:
+        core_lifecycle_td.subagent_orchestrator = old_orchestrator
+        core_lifecycle_td.subagent_runtime_manager = old_runtime_manager
         await test_client.post(
             "/api/subagent/config",
             json=old_cfg,
@@ -1136,6 +1265,29 @@ async def test_batch_upload_skills_accepts_valid_skill_archive(
     ]
     assert data["data"]["failed"] == []
     assert (skills_dir / "demo_skill" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_skills_endpoint_accepts_active_only_query_param(
+    app: Quart,
+    authenticated_header: dict,
+):
+    test_client = app.test_client()
+
+    resp_all = await test_client.get("/api/skills", headers=authenticated_header)
+    resp_active = await test_client.get(
+        "/api/skills?active_only=true", headers=authenticated_header
+    )
+
+    assert resp_all.status_code == 200
+    assert resp_active.status_code == 200
+    all_data = await resp_all.get_json()
+    active_data = await resp_active.get_json()
+    assert all_data["status"] == "ok"
+    assert active_data["status"] == "ok"
+    assert len(active_data["data"]["skills"]) <= len(all_data["data"]["skills"])
+    for skill in active_data["data"]["skills"]:
+        assert skill["active"] is True
 
 
 @pytest.mark.asyncio

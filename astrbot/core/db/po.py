@@ -62,6 +62,49 @@ class ProviderStat(TimestampMixin, SQLModel, table=True):
     time_to_first_token: float = Field(default=0.0, nullable=False)
 
 
+class SubAgentInstance(TimestampMixin, SQLModel, table=True):
+    __tablename__: str = "subagent_instances"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    instance_id: str = Field(
+        max_length=64,
+        nullable=False,
+        unique=True,
+        default_factory=lambda: str(uuid.uuid4()),
+    )
+    umo: str = Field(nullable=False, index=True)
+    scope_type: str = Field(max_length=32, nullable=False, index=True)
+    scope_id: str = Field(nullable=False, index=True)
+    name: str = Field(max_length=128, nullable=False, index=True)
+    preset_name: str = Field(max_length=128, nullable=False, index=True)
+    provider_id: str | None = Field(default=None)
+    persona_id: str | None = Field(default=None)
+    system_prompt: str | None = Field(default=None, sa_type=Text)
+    system_prompt_delta: str | None = Field(default=None, sa_type=Text)
+    tools: list | None = Field(default=None, sa_type=JSON)
+    skills: list | None = Field(default=None, sa_type=JSON)
+    history: list = Field(default_factory=list, sa_type=JSON)
+    token_usage: int = Field(default=0, nullable=False)
+    version: int = Field(default=1, nullable=False)
+    begin_dialogs_injected: bool = Field(default=False, nullable=False)
+    max_persisted_turns: int | None = Field(default=None)
+    max_persisted_tokens: int | None = Field(default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "umo",
+            "scope_type",
+            "scope_id",
+            "name",
+            name="uix_subagent_instance_scope_name",
+        ),
+    )
+
+
 class ConversationV2(TimestampMixin, SQLModel, table=True):
     __tablename__: str = "conversations"
 

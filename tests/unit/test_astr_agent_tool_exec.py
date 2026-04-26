@@ -4,7 +4,10 @@ import mcp
 import pytest
 
 from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.astr_agent_tool_exec import (
+    FunctionToolExecutor,
+    execute_persistent_subagent,
+)
 from astrbot.core.message.components import Image
 
 
@@ -343,3 +346,68 @@ async def test_collect_handoff_image_urls_filters_extensionless_file_outside_tem
     )
 
     assert image_urls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_persistent_subagent_passes_sanitized_explicit_and_event_images(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict = {}
+
+    async def _fake_convert_to_file_path(self):
+        return "/tmp/event_image.png"
+
+    async def _fake_get_current_chat_provider_id(_umo):
+        return "provider-id"
+
+    async def _fake_tool_loop_agent(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(completion_text="ok", token_usage=3)
+
+    monkeypatch.setattr(Image, "convert_to_file_path", _fake_convert_to_file_path)
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AstrAgentContext",
+        lambda context, event: SimpleNamespace(context=context, event=event),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AgentContextWrapper",
+        lambda context: ContextWrapper(context=context),
+    )
+    context = SimpleNamespace(
+        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
+        tool_loop_agent=_fake_tool_loop_agent,
+        get_config=lambda **_kwargs: {"provider_settings": {}},
+    )
+    event = _DummyEvent([Image(file="file:///tmp/original.png")])
+
+    def _get_extra(key):
+        if key == "subagent_runtime_context":
+            return context
+        return None
+
+    event.get_extra = _get_extra
+    instance = SimpleNamespace(
+        tools=[],
+        provider_id=None,
+        system_prompt="system",
+        system_prompt_delta=None,
+        token_usage=0,
+    )
+
+    result = await execute_persistent_subagent(
+        event,
+        instance,
+        [{"role": "user", "content": "hello"}],
+        "hello",
+        image_urls=[
+            " https://example.com/a.png ",
+            "https://example.com/a.png",
+            "/tmp/not-image.txt",
+        ],
+    )
+
+    assert result["final_response"] == "ok"
+    assert captured["image_urls"] == [
+        "https://example.com/a.png",
+        "/tmp/event_image.png",
+    ]

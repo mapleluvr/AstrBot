@@ -73,6 +73,7 @@ from astrbot.core.tools.knowledge_base_tools import (
     retrieve_knowledge_base,
 )
 from astrbot.core.tools.message_tools import SendMessageToUserTool
+from astrbot.core.tools.subagent_runtime_tools import SUBAGENT_RUNTIME_MANAGEMENT_TOOLS
 from astrbot.core.tools.web_search_tools import (
     BaiduWebSearchTool,
     BochaWebSearchTool,
@@ -193,6 +194,17 @@ def _select_provider(
     except ValueError as exc:
         logger.error("Error occurred while selecting provider: %s", exc)
         return None
+
+
+def _has_persistent_subagent_preset(subagent_orchestrator) -> bool:
+    presets = getattr(subagent_orchestrator, "presets", None)
+    if isinstance(presets, dict):
+        presets = presets.values()
+    if not presets:
+        return False
+    return any(
+        getattr(preset, "runtime_mode", None) == "persistent" for preset in presets
+    )
 
 
 async def _get_session_conv(
@@ -490,6 +502,10 @@ async def _ensure_persona_and_skills(
         # add subagent handoff tools
         for tool in so.handoffs:
             req.func_tool.add_tool(tool)
+
+        if _has_persistent_subagent_preset(so):
+            for tool_cls in SUBAGENT_RUNTIME_MANAGEMENT_TOOLS:
+                req.func_tool.add_tool(tmgr.get_builtin_tool(tool_cls))
 
         # check duplicates
         if remove_dup:
