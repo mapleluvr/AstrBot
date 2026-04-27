@@ -136,8 +136,13 @@ class SkillsRoute(Route):
             )
             runtime = provider_settings.get("computer_use_runtime", "local")
             skill_mgr = SkillManager()
+            active_only = request.args.get("active_only", "false").lower() in (
+                "true",
+                "1",
+                "yes",
+            )
             skills = skill_mgr.list_skills(
-                active_only=False, runtime=runtime, show_sandbox_path=False
+                active_only=active_only, runtime=runtime, show_sandbox_path=False
             )
             return (
                 Response()

@@ -185,6 +185,34 @@
                     auto-grow
                     hide-details="auto"
                   />
+
+                  <v-select
+                    v-model="agent.runtime_mode"
+                    :items="runtimeModeOptions"
+                    :label="tm('form.runtimeModeLabel')"
+                    :hint="tm('form.runtimeModeHint')"
+                    variant="outlined"
+                    density="comfortable"
+                    persistent-hint
+                    hide-details="auto"
+                  />
+
+                  <v-select
+                    v-model="agent.skills"
+                    :items="availableSkillItems"
+                    :label="tm('form.skillsLabel')"
+                    :hint="tm('form.skillsHint')"
+                    item-title="title"
+                    item-value="value"
+                    variant="outlined"
+                    density="comfortable"
+                    multiple
+                    chips
+                    closable-chips
+                    clearable
+                    persistent-hint
+                    hide-details="auto"
+                  />
                 </div>
               </section>
 
@@ -222,15 +250,19 @@ import { useModuleI18n } from '@/i18n/composables'
 import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog'
 
 type SubAgentItem = {
+  [key: string]: any
   __key: string
   name: string
   persona_id: string
   public_description: string
   enabled: boolean
   provider_id?: string
+  runtime_mode?: string
+  skills?: string[] | null
 }
 
 type SubAgentConfig = {
+  [key: string]: any
   main_enable: boolean
   remove_main_duplicate_tools: boolean
   agents: SubAgentItem[]
@@ -263,6 +295,31 @@ const cfg = ref<SubAgentConfig>({
   agents: []
 })
 
+const availableSkillItems = ref<{ title: string; value: string }[]>([])
+
+const runtimeModeOptions = computed(() => [
+  { title: tm('form.runtimeMode.handoff'), value: 'handoff' },
+  { title: tm('form.runtimeMode.persistent'), value: 'persistent' },
+])
+
+async function fetchAvailableSkills() {
+  try {
+    const res = await axios.get('/api/skills?active_only=true')
+    if (res.data.status === 'ok' && Array.isArray(res.data.data.skills)) {
+      availableSkillItems.value = res.data.data.skills.map(
+        (skill: { name: string; description: string }) => ({
+          title: skill.description
+            ? `${skill.name} — ${skill.description}`
+            : skill.name,
+          value: skill.name,
+        })
+      )
+    }
+  } catch {
+    availableSkillItems.value = []
+  }
+}
+
 const mainStateDescription = computed(() =>
   cfg.value.main_enable ? tm('description.enabled') : tm('description.disabled')
 )
@@ -275,29 +332,44 @@ function normalizeConfig(raw: any): SubAgentConfig {
   const agentsRaw = Array.isArray(raw?.agents) ? raw.agents : []
 
   const agents: SubAgentItem[] = agentsRaw.map((a: any, i: number) => ({
+    ...a,
     __key: `${Date.now()}_${i}_${Math.random().toString(16).slice(2)}`,
     name: (a?.name ?? '').toString(),
     persona_id: (a?.persona_id ?? '').toString(),
     public_description: (a?.public_description ?? '').toString(),
     enabled: a?.enabled !== false,
-    provider_id: (a?.provider_id ?? undefined) as string | undefined
+    provider_id: (a?.provider_id ?? undefined) as string | undefined,
+    runtime_mode: (a?.runtime_mode ?? 'handoff').toString(),
+    skills: a?.skills === null ? null : Array.isArray(a?.skills) ? a.skills.map((skill: any) => skill.toString()) : []
   }))
 
-  return { main_enable, remove_main_duplicate_tools, agents }
+  return { ...raw, main_enable, remove_main_duplicate_tools, agents }
+}
+
+function toSerializableConfig(config: SubAgentConfig) {
+  const { agents, ...topLevelConfig } = config
+  return {
+    ...topLevelConfig,
+    main_enable: config.main_enable,
+    remove_main_duplicate_tools: config.remove_main_duplicate_tools,
+    agents: agents.map((agent) => {
+      const { __key, ...agentConfig } = agent
+      return {
+        ...agentConfig,
+        name: agent.name,
+        persona_id: agent.persona_id,
+        public_description: agent.public_description,
+        enabled: agent.enabled,
+        provider_id: agent.provider_id ?? null,
+        runtime_mode: agent.runtime_mode ?? 'handoff',
+        skills: agent.skills === null ? null : (agent.skills ?? [])
+      }
+    })
+  }
 }
 
 function serializeConfig(config: SubAgentConfig): string {
-  return JSON.stringify({
-    main_enable: config.main_enable,
-    remove_main_duplicate_tools: config.remove_main_duplicate_tools,
-    agents: config.agents.map((agent) => ({
-      name: agent.name,
-      persona_id: agent.persona_id,
-      public_description: agent.public_description,
-      enabled: agent.enabled,
-      provider_id: agent.provider_id ?? null
-    }))
-  })
+  return JSON.stringify(toSerializableConfig(config))
 }
 
 async function loadConfig() {
@@ -327,7 +399,9 @@ function addAgent() {
     persona_id: '',
     public_description: '',
     enabled: true,
-    provider_id: undefined
+    provider_id: undefined,
+    runtime_mode: 'handoff',
+    skills: []
   })
   expandedAgents.value[key] = false
 }
@@ -379,17 +453,7 @@ async function save() {
   if (!validateBeforeSave()) return
   saving.value = true
   try {
-    const payload = {
-      main_enable: cfg.value.main_enable,
-      remove_main_duplicate_tools: cfg.value.remove_main_duplicate_tools,
-      agents: cfg.value.agents.map((agent) => ({
-        name: agent.name,
-        persona_id: agent.persona_id,
-        public_description: agent.public_description,
-        enabled: agent.enabled,
-        provider_id: agent.provider_id
-      }))
-    }
+    const payload = toSerializableConfig(cfg.value)
 
     const res = await axios.post('/api/subagent/config', payload)
     if (res.data.status === 'ok') {
@@ -442,6 +506,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   reload()
+  fetchAvailableSkills()
 })
 
 onBeforeUnmount(() => {

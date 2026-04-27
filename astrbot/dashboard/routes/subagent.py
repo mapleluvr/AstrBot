@@ -1,3 +1,4 @@
+import inspect
 import traceback
 
 from quart import jsonify, request
@@ -80,7 +81,16 @@ class SubAgentRoute(Route):
             # Reload dynamic handoff tools if orchestrator exists
             orch = getattr(self.core_lifecycle, "subagent_orchestrator", None)
             if orch is not None:
-                await orch.reload_from_config(data)
+                result = orch.reload_from_config(data)
+                if inspect.isawaitable(result):
+                    await result
+            runtime_manager = getattr(
+                self.core_lifecycle, "subagent_runtime_manager", None
+            )
+            if runtime_manager is not None:
+                result = runtime_manager.reload_from_config(data)
+                if inspect.isawaitable(result):
+                    await result
 
             return jsonify(Response().ok(message="保存成功").__dict__)
         except Exception as e:

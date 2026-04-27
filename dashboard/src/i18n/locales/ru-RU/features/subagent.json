@@ -61,7 +61,15 @@
         "personaLabel": "Выберите персонажа",
         "personaHint": "SubAgent наследует системные настройки и инструменты выбранного персонажа.",
         "descriptionLabel": "Описание для основного LLM (используется для принятия решения о handoff)",
-        "descriptionHint": "Отображается как описание инструмента transfer_to_* — будьте кратки и ясны."
+        "descriptionHint": "Отображается как описание инструмента transfer_to_* — будьте кратки и ясны.",
+        "runtimeModeLabel": "Режим выполнения",
+        "runtimeModeHint": "Handoff = одноразовое делегирование. Persistent = долгоживущий агент с историей.",
+        "runtimeMode": {
+            "handoff": "Handoff",
+            "persistent": "Persistent"
+        },
+        "skillsLabel": "Навыки",
+        "skillsHint": "Выберите навыки для агента. Оставьте пустым для наследования навыков персоны."
     },
     "messages": {
         "loadConfigFailed": "Не удалось загрузить конфигурацию",

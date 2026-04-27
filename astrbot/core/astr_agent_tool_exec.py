@@ -16,7 +16,7 @@ from astrbot.core.agent.message import Message
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.tool_executor import BaseFunctionToolExecutor
-from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_main_agent_resources import (
     BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT,
 )
@@ -30,6 +30,7 @@ from astrbot.core.message.message_event_result import (
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.provider.entites import ProviderRequest
 from astrbot.core.provider.register import llm_tools
+from astrbot.core.skills.skill_manager import SkillManager, build_skills_prompt
 from astrbot.core.tools.computer_tools import (
     ExecuteShellTool,
     FileDownloadTool,
@@ -49,6 +50,16 @@ from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 
 
 class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
+    @staticmethod
+    def _subagent_runtime_management_tool_names() -> set[str]:
+        try:
+            from astrbot.core.tools.subagent_runtime_tools import (
+                SUBAGENT_RUNTIME_MANAGEMENT_TOOLS,
+            )
+        except Exception:
+            return set()
+        return {tool_cls().name for tool_cls in SUBAGENT_RUNTIME_MANAGEMENT_TOOLS}
+
     @classmethod
     def _collect_image_urls_from_args(cls, image_urls_raw: T.Any) -> list[str]:
         if image_urls_raw is None:
@@ -243,6 +254,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             runtime,
             tool_mgr,
         )
+        management_tool_names = cls._subagent_runtime_management_tool_names()
 
         # Keep persona semantics aligned with the main agent: tools=None means
         # "all tools", including runtime computer-use tools.
@@ -250,6 +262,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             toolset = ToolSet()
             for registered_tool in llm_tools.func_list:
                 if isinstance(registered_tool, HandoffTool):
+                    continue
+                if registered_tool.name in management_tool_names:
                     continue
                 if registered_tool.active:
                     toolset.add_tool(registered_tool)
@@ -263,6 +277,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         toolset = ToolSet()
         for tool_name_or_obj in tools:
             if isinstance(tool_name_or_obj, str):
+                if tool_name_or_obj in management_tool_names:
+                    continue
                 registered_tool = llm_tools.get_func(tool_name_or_obj)
                 if registered_tool and registered_tool.active:
                     toolset.add_tool(registered_tool)
@@ -271,6 +287,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 if runtime_tool:
                     toolset.add_tool(runtime_tool)
             elif isinstance(tool_name_or_obj, FunctionTool):
+                if tool_name_or_obj.name in management_tool_names:
+                    continue
                 toolset.add_tool(tool_name_or_obj)
         return None if toolset.empty() else toolset
 
@@ -685,6 +703,94 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         if not res:
             return
         yield res
+
+
+async def execute_persistent_subagent(
+    event,
+    instance,
+    messages,
+    input_text,
+    *,
+    image_urls=None,
+) -> dict[str, T.Any]:
+    plugin_context = None
+    if hasattr(event, "get_extra"):
+        plugin_context = event.get_extra("subagent_runtime_context")
+    if plugin_context is None:
+        plugin_context = getattr(event, "context", None)
+    if plugin_context is None:
+        raise RuntimeError("Sub-agent runtime execution context is not available.")
+
+    run_context = AgentContextWrapper(
+        context=AstrAgentContext(context=plugin_context, event=event)
+    )
+    sanitized_image_urls = await FunctionToolExecutor._collect_handoff_image_urls(
+        run_context,
+        image_urls,
+    )
+    toolset = FunctionToolExecutor._build_handoff_toolset(
+        run_context,
+        getattr(instance, "tools", []),
+    )
+
+    system_prompt = getattr(instance, "system_prompt", None) or ""
+    system_prompt_delta = getattr(instance, "system_prompt_delta", None)
+    if system_prompt_delta:
+        system_prompt = f"{system_prompt}\n{system_prompt_delta}".strip()
+
+    contexts = []
+    for message in messages[:-1]:
+        try:
+            contexts.append(
+                message
+                if isinstance(message, Message)
+                else Message.model_validate(message)
+            )
+        except Exception:
+            continue
+
+    umo = event.unified_msg_origin
+    provider_id = getattr(instance, "provider_id", None)
+    if not provider_id:
+        provider_id = await plugin_context.get_current_chat_provider_id(umo)
+    prov_settings: dict = plugin_context.get_config(umo=umo).get(
+        "provider_settings", {}
+    )
+    runtime = str(prov_settings.get("computer_use_runtime", "local"))
+    skills_filter = getattr(instance, "skills", [])
+    if skills_filter is None or skills_filter:
+        skills = SkillManager().list_skills(active_only=True, runtime=runtime)
+        if skills_filter is not None:
+            allowed = set(skills_filter)
+            skills = [skill for skill in skills if skill.name in allowed]
+        if skills:
+            system_prompt = f"{system_prompt}\n{build_skills_prompt(skills)}".strip()
+            if runtime == "none":
+                system_prompt += (
+                    "\nUser has not enabled the Computer Use feature. "
+                    "You cannot use shell or Python to perform skills. "
+                    "If you need to use these capabilities, ask the user to enable Computer Use in the AstrBot WebUI -> Config."
+                )
+    llm_resp = await plugin_context.tool_loop_agent(
+        event=event,
+        chat_provider_id=provider_id,
+        prompt=input_text,
+        image_urls=sanitized_image_urls,
+        system_prompt=system_prompt,
+        tools=toolset,
+        contexts=contexts or None,
+        max_steps=int(prov_settings.get("max_agent_step", 30)),
+        tool_call_timeout=run_context.tool_call_timeout,
+        stream=prov_settings.get("streaming_response", False),
+    )
+    final_response = getattr(llm_resp, "completion_text", "") or ""
+    return {
+        "final_response": final_response,
+        "history": [*messages, {"role": "assistant", "content": final_response}],
+        "token_usage": getattr(
+            llm_resp, "token_usage", getattr(instance, "token_usage", 0)
+        ),
+    }
 
 
 async def call_local_llm_tool(

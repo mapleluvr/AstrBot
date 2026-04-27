@@ -260,6 +260,29 @@ class SingleToolThenFinalProvider(MockProvider):
         )
 
 
+class CapturingSingleToolThenFinalProvider(SingleToolThenFinalProvider):
+    def __init__(self, tool_name: str, tool_args: dict[str, str] | None = None):
+        super().__init__(tool_name, tool_args)
+        self.received_contexts = []
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        self.received_contexts.append(kwargs.get("contexts"))
+        return await super().text_chat(**kwargs)
+
+
+class ErrorTextToolExecutor:
+    def execute(self, tool, run_context, **tool_args):
+        async def generator():
+            from mcp.types import CallToolResult, TextContent
+
+            result = CallToolResult(
+                content=[TextContent(type="text", text="error: failed to load skill")]
+            )
+            yield result
+
+        return generator()
+
+
 class SequentialToolProvider(MockProvider):
     def __init__(self, tool_sequence: list[str]):
         super().__init__()
@@ -1271,6 +1294,80 @@ async def test_skills_like_requery_passes_extra_user_content_parts():
     parts = captured_kwargs["extra_user_content_parts"]
     assert len(parts) == 1
     assert parts[0].text == "<image_caption>一张猫的照片</image_caption>"
+
+
+@pytest.mark.asyncio
+async def test_successful_skill_tool_call_is_tracked_and_reminded_transiently():
+    tool = FunctionTool(
+        name="skill",
+        description="Load skill",
+        parameters={"type": "object", "properties": {"name": {"type": "string"}}},
+        handler=AsyncMock(),
+    )
+    provider = CapturingSingleToolThenFinalProvider(
+        "skill",
+        {"name": "local-skill"},
+    )
+    request = ProviderRequest(
+        prompt="load skill",
+        func_tool=ToolSet(tools=[tool]),
+        contexts=[],
+    )
+    event = MockEvent(umo="test_umo", sender_id="test_sender")
+    runner = ToolLoopAgentRunner()
+
+    await runner.reset(
+        provider=provider,
+        request=request,
+        run_context=ContextWrapper(context=MockAgentContext(event)),
+        tool_executor=cast(Any, MockToolExecutor()),
+        agent_hooks=MockHooks(),
+    )
+
+    async for _ in runner.step_until_done(2):
+        pass
+
+    assert runner._activated_skills == {"local-skill"}
+    assert len(provider.received_contexts) >= 2
+    assert "Activated skills this session: local-skill" in str(
+        provider.received_contexts[1]
+    )
+    assert "Activated skills this session" not in str(runner.run_context.messages)
+
+
+@pytest.mark.asyncio
+async def test_failed_skill_tool_call_is_not_tracked():
+    tool = FunctionTool(
+        name="skill",
+        description="Load skill",
+        parameters={"type": "object", "properties": {"name": {"type": "string"}}},
+        handler=AsyncMock(),
+    )
+    provider = CapturingSingleToolThenFinalProvider(
+        "skill",
+        {"name": "missing-skill"},
+    )
+    request = ProviderRequest(
+        prompt="load skill",
+        func_tool=ToolSet(tools=[tool]),
+        contexts=[],
+    )
+    event = MockEvent(umo="test_umo", sender_id="test_sender")
+    runner = ToolLoopAgentRunner()
+
+    await runner.reset(
+        provider=provider,
+        request=request,
+        run_context=ContextWrapper(context=MockAgentContext(event)),
+        tool_executor=cast(Any, ErrorTextToolExecutor()),
+        agent_hooks=MockHooks(),
+    )
+
+    async for _ in runner.step_until_done(2):
+        pass
+
+    assert runner._activated_skills == set()
+    assert "Activated skills this session" not in str(provider.received_contexts)
 
 
 @pytest.mark.asyncio

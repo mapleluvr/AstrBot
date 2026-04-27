@@ -29,10 +29,12 @@ from astrbot.core.pipeline.scheduler import PipelineContext, PipelineScheduler
 from astrbot.core.platform.manager import PlatformManager
 from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
 from astrbot.core.provider.manager import ProviderManager
+from astrbot.core.skills import SkillManager
 from astrbot.core.star.context import Context
 from astrbot.core.star.star_handler import EventType, star_handlers_registry, star_map
 from astrbot.core.star.star_manager import PluginManager
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
+from astrbot.core.subagent_runtime import SubAgentRuntimeManager
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.updator import AstrBotUpdator
 from astrbot.core.utils.llm_metadata import update_llm_metadata
@@ -57,6 +59,7 @@ class AstrBotCoreLifecycle:
         self.db = db  # 初始化数据库
 
         self.subagent_orchestrator: SubAgentOrchestrator | None = None
+        self.subagent_runtime_manager: SubAgentRuntimeManager | None = None
         self.cron_manager: CronJobManager | None = None
         self.temp_dir_cleaner: TempDirCleaner | None = None
 
@@ -91,9 +94,10 @@ class AstrBotCoreLifecycle:
                     self.provider_manager.llm_tools,
                     self.persona_mgr,
                 )
-            await self.subagent_orchestrator.reload_from_config(
-                self.astrbot_config.get("subagent_orchestrator", {}),
-            )
+            config = self.astrbot_config.get("subagent_orchestrator", {})
+            if not isinstance(config, dict):
+                config = {}
+            await self.subagent_orchestrator.reload_from_config(config)
         except Exception as e:
             logger.error(f"Subagent orchestrator init failed: {e}", exc_info=True)
 
@@ -166,6 +170,34 @@ class AstrBotCoreLifecycle:
         # 初始化对话管理器
         self.conversation_manager = ConversationManager(self.db)
 
+        subagent_config = self.astrbot_config.get("subagent_orchestrator", {})
+        if not isinstance(subagent_config, dict):
+            subagent_config = {}
+        self.subagent_runtime_manager = SubAgentRuntimeManager(
+            self.db,
+            self.provider_manager.llm_tools,
+            self.persona_mgr,
+            self.conversation_manager,
+            config=subagent_config,
+            skill_manager=SkillManager(),
+        )
+        cleanup_for_session = getattr(
+            self.subagent_runtime_manager,
+            "cleanup_for_session",
+            None,
+        )
+        if cleanup_for_session is not None:
+            self.conversation_manager.register_on_session_deleted(cleanup_for_session)
+        cleanup_for_conversation = getattr(
+            self.subagent_runtime_manager,
+            "cleanup_for_conversation",
+            None,
+        )
+        if cleanup_for_conversation is not None:
+            self.conversation_manager.register_on_conversation_deleted(
+                cleanup_for_conversation
+            )
+
         # 初始化平台消息历史管理器
         self.platform_message_history_manager = PlatformMessageHistoryManager(self.db)
 
@@ -192,6 +224,7 @@ class AstrBotCoreLifecycle:
             self.kb_manager,
             self.cron_manager,
             self.subagent_orchestrator,
+            self.subagent_runtime_manager,
         )
 
         # 初始化插件管理器

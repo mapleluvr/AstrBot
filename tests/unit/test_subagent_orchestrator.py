@@ -108,3 +108,56 @@ async def test_reload_from_config_tool_normalization(raw_tools, expected_tools):
 
     handoff = orchestrator.handoffs[0]
     assert handoff.agent.tools == expected_tools
+
+
+@pytest.mark.asyncio
+async def test_reload_from_config_keeps_handoff_mode_default():
+    tool_mgr = MagicMock()
+    persona_mgr = MagicMock()
+    persona_mgr.get_persona_v3_by_id.return_value = None
+    orchestrator = SubAgentOrchestrator(tool_mgr=tool_mgr, persona_mgr=persona_mgr)
+
+    await orchestrator.reload_from_config(_build_cfg({}))
+
+    assert len(orchestrator.handoffs) == 1
+    assert len(orchestrator.presets) == 1
+    assert orchestrator.presets[0].name == "planner"
+    assert orchestrator.presets[0].runtime_mode == "handoff"
+
+
+@pytest.mark.asyncio
+async def test_reload_from_config_persistent_mode_does_not_create_handoff():
+    tool_mgr = MagicMock()
+    persona_mgr = MagicMock()
+    persona_mgr.get_persona_v3_by_id.return_value = None
+    orchestrator = SubAgentOrchestrator(tool_mgr=tool_mgr, persona_mgr=persona_mgr)
+
+    await orchestrator.reload_from_config(_build_cfg({"runtime_mode": "persistent"}))
+
+    assert orchestrator.handoffs == []
+    assert len(orchestrator.presets) == 1
+    assert orchestrator.presets[0].name == "planner"
+    assert orchestrator.presets[0].runtime_mode == "persistent"
+
+
+@pytest.mark.asyncio
+async def test_reload_from_config_preserves_preset_skills_and_none_tools_from_persona():
+    tool_mgr = MagicMock()
+    persona_mgr = MagicMock()
+    persona_mgr.get_persona_v3_by_id.return_value = {
+        "name": "custom",
+        "prompt": "persona prompt",
+        "tools": None,
+        "skills": None,
+        "_begin_dialogs_processed": [],
+    }
+    orchestrator = SubAgentOrchestrator(tool_mgr=tool_mgr, persona_mgr=persona_mgr)
+
+    await orchestrator.reload_from_config(
+        _build_cfg({"persona_id": "custom", "tools": [], "skills": []})
+    )
+
+    assert len(orchestrator.presets) == 1
+    preset = orchestrator.presets[0]
+    assert preset.tools is None
+    assert preset.skills is None

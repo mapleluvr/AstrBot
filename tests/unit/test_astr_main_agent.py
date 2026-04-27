@@ -14,6 +14,9 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider import Provider
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.skills.skill_manager import SkillInfo
+from astrbot.core.tools.skill_tool import SkillTool
+from astrbot.core.tools.subagent_runtime_tools import SUBAGENT_RUNTIME_MANAGEMENT_TOOLS
 
 
 @pytest.fixture
@@ -548,6 +551,100 @@ class TestApplyFileExtract:
 class TestEnsurePersonaAndSkills:
     """Tests for _ensure_persona_and_skills function."""
 
+    @staticmethod
+    def _skill_info(name: str = "test-skill") -> SkillInfo:
+        return SkillInfo(
+            name=name,
+            description="Test skill",
+            path=f"/skills/{name}/SKILL.md",
+            active=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_injects_skill_tool_when_skills_are_available(
+        self,
+        mock_event,
+        mock_context,
+    ):
+        module = ama
+        skill = self._skill_info()
+        mock_context.get_llm_tool_manager.return_value.get_full_tool_set.return_value = ToolSet()
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id=None)
+
+        with patch.object(module, "SkillManager") as skill_manager_cls:
+            skill_manager = skill_manager_cls.return_value
+            skill_manager.list_skills.return_value = [skill]
+            await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        skill_tool = req.func_tool.get_tool("skill")
+        assert isinstance(skill_tool, SkillTool)
+        assert list(skill_tool.allowed_skills) == ["test-skill"]
+
+    @pytest.mark.asyncio
+    async def test_omits_skill_tool_when_persona_disables_all_skills(
+        self,
+        mock_event,
+        mock_context,
+    ):
+        module = ama
+        persona = {"name": "persona", "prompt": "", "skills": [], "tools": None}
+        mock_context.persona_manager.resolve_selected_persona = AsyncMock(
+            return_value=("persona", persona, None, False)
+        )
+        mock_context.get_llm_tool_manager.return_value.get_full_tool_set.return_value = ToolSet()
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id="persona")
+
+        with patch.object(module, "SkillManager") as skill_manager_cls:
+            skill_manager_cls.return_value.list_skills.return_value = [
+                self._skill_info()
+            ]
+            await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        assert "skill" not in req.func_tool.names()
+        assert "## Skills" not in req.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_injects_skill_tool_with_explicit_persona_tool_list(
+        self,
+        mock_event,
+        mock_context,
+    ):
+        module = ama
+        skill = self._skill_info("allowed-skill")
+        persona = {
+            "name": "persona",
+            "prompt": "",
+            "skills": ["allowed-skill"],
+            "tools": ["test_tool"],
+        }
+        mock_context.persona_manager.resolve_selected_persona = AsyncMock(
+            return_value=("persona", persona, None, False)
+        )
+        explicit_tool = FunctionTool(
+            name="test_tool",
+            parameters={"type": "object", "properties": {}},
+            description="Test tool",
+        )
+        tmgr = mock_context.get_llm_tool_manager.return_value
+        tmgr.get_func.return_value = explicit_tool
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id="persona")
+
+        with patch.object(module, "SkillManager") as skill_manager_cls:
+            skill_manager = skill_manager_cls.return_value
+            skill_manager.list_skills.return_value = [skill]
+            await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        assert "test_tool" in req.func_tool.names()
+        skill_tool = req.func_tool.get_tool("skill")
+        assert isinstance(skill_tool, SkillTool)
+        assert list(skill_tool.allowed_skills) == ["allowed-skill"]
+
     @pytest.mark.asyncio
     async def test_ensure_persona_from_session(self, mock_event, mock_context):
         """Test applying persona from session service config."""
@@ -675,6 +772,101 @@ class TestEnsurePersonaAndSkills:
         assert "transfer_to_planner" in req.func_tool.names()
         assert "tool_a" not in req.func_tool.names()
         assert "tool_b" in req.func_tool.names()
+
+    @pytest.mark.asyncio
+    async def test_persistent_subagent_presets_inject_management_tools(
+        self, mock_event, mock_context
+    ):
+        """Persistent sub-agent presets inject management tools into main agent."""
+        module = ama
+        tmgr = mock_context.get_llm_tool_manager.return_value
+        tmgr.get_full_tool_set.return_value = ToolSet()
+        tmgr.func_list = []
+
+        preset = MagicMock()
+        preset.runtime_mode = "persistent"
+        mock_context.subagent_orchestrator = MagicMock(handoffs=[], presets=[preset])
+        mock_context.get_config.return_value = {
+            "subagent_orchestrator": {
+                "main_enable": True,
+                "runtime": {"enable": True},
+            }
+        }
+
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id=None)
+
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        names = req.func_tool.names()
+        expected_names = [
+            tool_cls().name for tool_cls in SUBAGENT_RUNTIME_MANAGEMENT_TOOLS
+        ]
+        for name in expected_names:
+            assert names.count(name) == 1
+
+    @pytest.mark.asyncio
+    async def test_disabled_persistent_subagent_runtime_skips_management_tools(
+        self, mock_event, mock_context
+    ):
+        """Persistent presets do not inject runtime tools when runtime is disabled."""
+        module = ama
+        tmgr = mock_context.get_llm_tool_manager.return_value
+        tmgr.get_full_tool_set.return_value = ToolSet()
+        tmgr.func_list = []
+
+        preset = MagicMock()
+        preset.runtime_mode = "persistent"
+        mock_context.subagent_orchestrator = MagicMock(handoffs=[], presets=[preset])
+        mock_context.get_config.return_value = {
+            "subagent_orchestrator": {
+                "main_enable": True,
+                "runtime": {"enable": False},
+            }
+        }
+
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id=None)
+
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        names = req.func_tool.names() if req.func_tool is not None else []
+        expected_names = [
+            tool_cls().name for tool_cls in SUBAGENT_RUNTIME_MANAGEMENT_TOOLS
+        ]
+        for name in expected_names:
+            assert name not in names
+
+    @pytest.mark.asyncio
+    async def test_handoff_subagent_presets_still_inject_handoff_tools(
+        self, mock_event, mock_context
+    ):
+        """Legacy handoff presets keep existing handoff tool injection behavior."""
+        module = ama
+        tmgr = mock_context.get_llm_tool_manager.return_value
+        tmgr.get_full_tool_set.return_value = ToolSet()
+        tmgr.func_list = []
+
+        handoff = MagicMock()
+        handoff.name = "transfer_to_planner"
+        preset = MagicMock()
+        preset.runtime_mode = "handoff"
+        mock_context.subagent_orchestrator = MagicMock(
+            handoffs=[handoff], presets=[preset]
+        )
+        mock_context.get_config.return_value = {
+            "subagent_orchestrator": {"main_enable": True}
+        }
+
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id=None)
+
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        assert "transfer_to_planner" in req.func_tool.names()
 
 
 class TestDecorateLlmRequest:

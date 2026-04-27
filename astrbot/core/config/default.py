@@ -196,6 +196,12 @@ DEFAULT_CONFIG = {
             "Do not try to use domain tools yourself. If no subagent fits, respond directly."
         ),
         "agents": [],
+        "runtime": {
+            "enable": False,
+            "max_instances_per_scope": 8,
+            "max_persisted_turns": 20,
+            "max_persisted_tokens": None,
+        },
     },
     "provider_stt_settings": {
         "enable": False,

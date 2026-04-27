@@ -268,6 +268,7 @@ class TestAstrBotCoreLifecycleInitialize:
     ):
         """Test that initialize sets up all required components in correct order."""
         lifecycle = AstrBotCoreLifecycle(mock_log_broker, mock_db)
+        lifecycle.astrbot_config = mock_astrbot_config
 
         # Mock all the dependencies
         mock_db.initialize = AsyncMock()
@@ -286,11 +287,14 @@ class TestAstrBotCoreLifecycleInitialize:
 
         mock_provider_manager = MagicMock()
         mock_provider_manager.initialize = AsyncMock()
+        mock_provider_manager.llm_tools = MagicMock()
 
         mock_platform_manager = MagicMock()
         mock_platform_manager.initialize = AsyncMock()
 
         mock_conversation_manager = MagicMock()
+        mock_conversation_manager.register_on_session_deleted = MagicMock()
+        mock_conversation_manager.register_on_conversation_deleted = MagicMock()
 
         mock_platform_message_history_manager = MagicMock()
 
@@ -301,6 +305,10 @@ class TestAstrBotCoreLifecycleInitialize:
 
         mock_star_context = MagicMock()
         mock_star_context._register_tasks = []
+
+        mock_subagent_runtime_manager = MagicMock()
+        mock_subagent_runtime_manager.cleanup_for_session = AsyncMock()
+        mock_subagent_runtime_manager.cleanup_for_conversation = AsyncMock()
 
         mock_plugin_manager = MagicMock()
         mock_plugin_manager.reload = AsyncMock()
@@ -353,7 +361,12 @@ class TestAstrBotCoreLifecycleInitialize:
             ),
             patch(
                 "astrbot.core.core_lifecycle.Context", return_value=mock_star_context
-            ),
+            ) as mock_context_cls,
+            patch(
+                "astrbot.core.core_lifecycle.SubAgentRuntimeManager",
+                return_value=mock_subagent_runtime_manager,
+            ) as mock_runtime_manager_cls,
+            patch("astrbot.core.core_lifecycle.SkillManager") as mock_skill_manager_cls,
             patch(
                 "astrbot.core.core_lifecycle.PluginManager",
                 return_value=mock_plugin_manager,
@@ -401,6 +414,103 @@ class TestAstrBotCoreLifecycleInitialize:
 
         # Verify pipeline scheduler loaded
         assert lifecycle.pipeline_scheduler_mapping is not None
+
+        mock_runtime_manager_cls.assert_called_once_with(
+            mock_db,
+            mock_provider_manager.llm_tools,
+            mock_persona_mgr,
+            mock_conversation_manager,
+            config={},
+            skill_manager=mock_skill_manager_cls.return_value,
+        )
+        assert lifecycle.subagent_runtime_manager is mock_subagent_runtime_manager
+        assert mock_context_cls.call_args.args[-1] is mock_subagent_runtime_manager
+        mock_conversation_manager.register_on_session_deleted.assert_called_once_with(
+            mock_subagent_runtime_manager.cleanup_for_session
+        )
+        mock_conversation_manager.register_on_conversation_deleted.assert_called_once_with(
+            mock_subagent_runtime_manager.cleanup_for_conversation
+        )
+
+    @pytest.mark.asyncio
+    async def test_initialize_context_exposes_subagent_runtime_manager(
+        self, mock_log_broker, mock_db, mock_astrbot_config
+    ):
+        lifecycle = AstrBotCoreLifecycle(mock_log_broker, mock_db)
+        mock_db.initialize = AsyncMock()
+        mock_runtime_manager = MagicMock()
+
+        with (
+            patch("astrbot.core.core_lifecycle.astrbot_config", mock_astrbot_config),
+            patch(
+                "astrbot.core.core_lifecycle.html_renderer.initialize",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.UmopConfigRouter",
+                return_value=MagicMock(initialize=AsyncMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.AstrBotConfigManager",
+                return_value=MagicMock(default_conf={}, confs={}),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.PersonaManager",
+                return_value=MagicMock(initialize=AsyncMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.ProviderManager",
+                return_value=MagicMock(initialize=AsyncMock(), llm_tools=MagicMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.PlatformManager",
+                return_value=MagicMock(initialize=AsyncMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.ConversationManager",
+                return_value=MagicMock(
+                    register_on_session_deleted=MagicMock(),
+                    register_on_conversation_deleted=MagicMock(),
+                ),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.PlatformMessageHistoryManager",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.KnowledgeBaseManager",
+                return_value=MagicMock(initialize=AsyncMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.CronJobManager",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.SubAgentRuntimeManager",
+                return_value=mock_runtime_manager,
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.PluginManager",
+                return_value=MagicMock(reload=AsyncMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.PipelineScheduler",
+                return_value=MagicMock(initialize=AsyncMock()),
+            ),
+            patch(
+                "astrbot.core.core_lifecycle.AstrBotUpdator",
+                return_value=MagicMock(),
+            ),
+            patch("astrbot.core.core_lifecycle.EventBus", return_value=MagicMock()),
+            patch("astrbot.core.core_lifecycle.migra", new_callable=AsyncMock),
+            patch(
+                "astrbot.core.core_lifecycle.update_llm_metadata",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await lifecycle.initialize()
+
+        assert lifecycle.star_context.subagent_runtime_manager is mock_runtime_manager
 
     @pytest.mark.asyncio
     async def test_initialize_handles_migration_failure(

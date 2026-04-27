@@ -24,6 +24,9 @@ class ConversationManager:
 
         # 会话删除回调函数列表（用于级联清理，如知识库配置）
         self._on_session_deleted_callbacks: list[Callable[[str], Awaitable[None]]] = []
+        self._on_conversation_deleted_callbacks: list[
+            Callable[[str], Awaitable[None]]
+        ] = []
 
     def register_on_session_deleted(
         self,
@@ -40,6 +43,13 @@ class ConversationManager:
         """
         self._on_session_deleted_callbacks.append(callback)
 
+    def register_on_conversation_deleted(
+        self,
+        callback: Callable[[str], Awaitable[None]],
+    ) -> None:
+        """注册对话删除回调函数."""
+        self._on_conversation_deleted_callbacks.append(callback)
+
     async def _trigger_session_deleted(self, unified_msg_origin: str) -> None:
         """触发会话删除回调.
 
@@ -55,6 +65,18 @@ class ConversationManager:
 
                 logger.error(
                     f"会话删除回调执行失败 (session: {unified_msg_origin}): {e}",
+                )
+
+    async def _trigger_conversation_deleted(self, conversation_id: str) -> None:
+        """触发对话删除回调."""
+        for callback in self._on_conversation_deleted_callbacks:
+            try:
+                await callback(conversation_id)
+            except Exception as e:
+                from astrbot.core import logger
+
+                logger.error(
+                    f"对话删除回调执行失败 (conversation: {conversation_id}): {e}",
                 )
 
     def _convert_conv_from_v2_to_v1(self, conv_v2: ConversationV2) -> Conversation:
@@ -135,13 +157,16 @@ class ConversationManager:
 
         """
         if not conversation_id:
-            conversation_id = self.session_conversations.get(unified_msg_origin)
+            conversation_id = await self.get_curr_conversation_id(unified_msg_origin)
         if conversation_id:
-            await self.db.delete_conversation(cid=conversation_id)
             curr_cid = await self.get_curr_conversation_id(unified_msg_origin)
+            deleted = await self.db.delete_conversation(cid=conversation_id)
+            if not deleted:
+                return
             if curr_cid == conversation_id:
                 self.session_conversations.pop(unified_msg_origin, None)
                 await sp.session_remove(unified_msg_origin, "sel_conv_id")
+            await self._trigger_conversation_deleted(conversation_id)
 
     async def delete_conversations_by_user_id(self, unified_msg_origin: str) -> None:
         """删除会话的所有对话
