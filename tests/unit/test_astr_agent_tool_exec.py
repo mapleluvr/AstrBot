@@ -4,6 +4,7 @@ import mcp
 import pytest
 
 from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core import astr_agent_tool_exec as tool_exec
 from astrbot.core.astr_agent_tool_exec import (
     FunctionToolExecutor,
     execute_persistent_subagent,
@@ -411,3 +412,69 @@ async def test_execute_persistent_subagent_passes_sanitized_explicit_and_event_i
         "https://example.com/a.png",
         "/tmp/event_image.png",
     ]
+
+
+@pytest.mark.asyncio
+async def test_execute_persistent_subagent_injects_selected_skills_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict = {}
+
+    class FakeSkillManager:
+        def list_skills(self, *, active_only=True, runtime="local"):
+            assert active_only is True
+            assert runtime == "local"
+            return [
+                SimpleNamespace(name="summarize", description="Summarize text"),
+                SimpleNamespace(name="draft", description="Draft text"),
+            ]
+
+    def fake_build_skills_prompt(skills):
+        return "SKILLS: " + ",".join(skill.name for skill in skills)
+
+    async def _fake_tool_loop_agent(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(completion_text="ok", token_usage=3)
+
+    async def _fake_get_current_chat_provider_id(_umo):
+        return "provider-id"
+
+    monkeypatch.setattr(tool_exec, "SkillManager", FakeSkillManager, raising=False)
+    monkeypatch.setattr(
+        tool_exec,
+        "build_skills_prompt",
+        fake_build_skills_prompt,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AstrAgentContext",
+        lambda context, event: SimpleNamespace(context=context, event=event),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AgentContextWrapper",
+        lambda context: ContextWrapper(context=context),
+    )
+    context = SimpleNamespace(
+        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
+        tool_loop_agent=_fake_tool_loop_agent,
+        get_config=lambda **_kwargs: {"provider_settings": {"computer_use_runtime": "local"}},
+    )
+    event = _DummyEvent([])
+    event.get_extra = lambda key: context if key == "subagent_runtime_context" else None
+    instance = SimpleNamespace(
+        tools=[],
+        skills=["summarize"],
+        provider_id=None,
+        system_prompt="system",
+        system_prompt_delta=None,
+        token_usage=0,
+    )
+
+    await execute_persistent_subagent(
+        event,
+        instance,
+        [{"role": "user", "content": "hello"}],
+        "hello",
+    )
+
+    assert captured["system_prompt"] == "system\nSKILLS: summarize"

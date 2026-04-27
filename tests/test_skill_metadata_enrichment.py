@@ -100,8 +100,8 @@ def test_build_skills_prompt_basic_format():
     assert "`/abs/skills/screenshot/SKILL.md`" in prompt
 
 
-def test_build_skills_prompt_absolute_path_in_example():
-    """The mandatory grounding example should show the absolute path."""
+def test_build_skills_prompt_absolute_path_in_inventory():
+    """The skill inventory should show the absolute path."""
     skills = [
         SkillInfo(
             name="foo",
@@ -111,10 +111,11 @@ def test_build_skills_prompt_absolute_path_in_example():
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert "cat /home/pan/AstrBot/skills/foo/SKILL.md" in prompt
+    assert "`/home/pan/AstrBot/skills/foo/SKILL.md`" in prompt
+    assert "cat /home/pan/AstrBot/skills/foo/SKILL.md" not in prompt
 
 
-def test_build_skills_prompt_keeps_placeholder_example_literal():
+def test_build_skills_prompt_keeps_placeholder_path_literal():
     skills = [
         SkillInfo(
             name="foo",
@@ -124,8 +125,7 @@ def test_build_skills_prompt_keeps_placeholder_example_literal():
         ),
     ]
     prompt = build_skills_prompt(skills)
-    example_fragment = prompt.split("(e.g. `", 1)[1].split("`).", 1)[0]
-    assert example_fragment == "cat <skills_root>/<skill_name>/SKILL.md"
+    assert "`<skills_root>/<skill_name>/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_preserves_windows_absolute_path_in_example(monkeypatch):
@@ -139,7 +139,7 @@ def test_build_skills_prompt_preserves_windows_absolute_path_in_example(monkeypa
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert 'type "C:/AstrBot/data/skills/foo/SKILL.md"' in prompt
+    assert "`C:/AstrBot/data/skills/foo/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_uses_windows_friendly_command_for_windows_paths(
@@ -155,7 +155,7 @@ def test_build_skills_prompt_uses_windows_friendly_command_for_windows_paths(
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert 'type "D:/skills/foo/SKILL.md"' in prompt
+    assert "`D:/skills/foo/SKILL.md`" in prompt
     assert 'cat "D:/skills/foo/SKILL.md"' not in prompt
 
 
@@ -170,7 +170,7 @@ def test_build_skills_prompt_quotes_windows_paths_with_spaces(monkeypatch):
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert 'type "C:/AstrBot/My Skills/foo/SKILL.md"' in prompt
+    assert "`C:/AstrBot/My Skills/foo/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_normalizes_windows_backslashes_in_example(monkeypatch):
@@ -184,7 +184,7 @@ def test_build_skills_prompt_normalizes_windows_backslashes_in_example(monkeypat
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert 'type "C:/AstrBot/My Skills/foo/SKILL.md"' in prompt
+    assert "`C:/AstrBot/My Skills/foo/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_uses_windows_command_for_unc_paths(monkeypatch):
@@ -198,7 +198,7 @@ def test_build_skills_prompt_uses_windows_command_for_unc_paths(monkeypatch):
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert 'type "//server/share/skills/foo/SKILL.md"' in prompt
+    assert "`//server/share/skills/foo/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_keeps_posix_double_slash_paths_on_non_windows(monkeypatch):
@@ -212,8 +212,7 @@ def test_build_skills_prompt_keeps_posix_double_slash_paths_on_non_windows(monke
         ),
     ]
     prompt = build_skills_prompt(skills)
-    example_fragment = prompt.split("(e.g. `", 1)[1].split("`).", 1)[0]
-    assert example_fragment == "cat //server/share/skills/foo/SKILL.md"
+    assert "`//server/share/skills/foo/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_normalizes_windows_backslashes_on_non_windows_host(
@@ -229,8 +228,7 @@ def test_build_skills_prompt_normalizes_windows_backslashes_on_non_windows_host(
         ),
     ]
     prompt = build_skills_prompt(skills)
-    example_fragment = prompt.split("(e.g. `", 1)[1].split("`).", 1)[0]
-    assert example_fragment == "cat 'C:/Users/Alice/技能/SKILL.md'"
+    assert "`C:/Users/Alice/技能/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_preserves_drive_colon_while_sanitizing_unsafe_chars(
@@ -246,10 +244,7 @@ def test_build_skills_prompt_preserves_drive_colon_while_sanitizing_unsafe_chars
         ),
     ]
     prompt = build_skills_prompt(skills)
-    assert 'type "C:/AstrBot/data/skills/foo/SKILL.md"' in prompt
-
-    example_fragment = prompt.split("(e.g. `", 1)[1].split("`).", 1)[0]
-    assert example_fragment == 'type "C:/AstrBot/data/skills/foo/SKILL.md"'
+    assert "`C:/AstrBot/data/skills/foo/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_strips_non_drive_colons_from_example_path():
@@ -262,8 +257,7 @@ def test_build_skills_prompt_strips_non_drive_colons_from_example_path():
         ),
     ]
     prompt = build_skills_prompt(skills)
-    example_fragment = prompt.split("(e.g. `", 1)[1].split("`).", 1)[0]
-    assert example_fragment == "cat /tmp/evilpayload/SKILL.md"
+    assert "`/tmp/evilpayload/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_preserves_unicode_local_path_in_example():
@@ -276,8 +270,7 @@ def test_build_skills_prompt_preserves_unicode_local_path_in_example():
         ),
     ]
     prompt = build_skills_prompt(skills)
-    example_fragment = prompt.split("(e.g. `", 1)[1].split("`).", 1)[0]
-    assert "/home/pan/技能/العربية/café/SKILL.md" in example_fragment
+    assert "`/home/pan/技能/العربية/café/SKILL.md`" in prompt
 
 
 def test_build_skills_prompt_sanitizes_sandbox_skill_metadata_in_inventory():
@@ -373,12 +366,28 @@ def test_build_skills_prompt_progressive_disclosure_rules():
     # Numbered rules
     assert "1." in prompt  # Discovery
     assert "2." in prompt  # When to trigger
-    assert "3." in prompt  # Mandatory grounding
+    assert "3." in prompt  # SkillTool loading
     assert "4." in prompt  # Progressive disclosure
     # Key concepts
-    assert "Mandatory grounding" in prompt
+    assert "SkillTool loading" in prompt
     assert "Progressive disclosure" in prompt
     assert "SKILL.md" in prompt
+
+
+def test_build_skills_prompt_instructs_skill_tool_instead_of_shell_read():
+    skills = [
+        SkillInfo(
+            name="test",
+            description="test skill",
+            path="/skills/test/SKILL.md",
+            active=True,
+        )
+    ]
+    prompt = build_skills_prompt(skills)
+
+    assert "call the `skill` tool" in prompt
+    assert "Mandatory grounding" not in prompt
+    assert "first read its `SKILL.md` by running a shell command" not in prompt
 
 
 def test_build_skills_prompt_no_custom_fields():
@@ -476,3 +485,61 @@ def test_list_skills_description_from_sandbox_cache(monkeypatch, tmp_path: Path)
     assert "Scrape web pages" in s.description
     # Path should be the absolute path from cache
     assert "/home/pan/AstrBot/skills/web-scrape/SKILL.md" in s.path
+
+
+def test_get_skill_respects_runtime_and_active_status(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    temp_dir = tmp_path / "temp"
+    skills_root = tmp_path / "skills"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    skills_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_data_path",
+        lambda: str(data_dir),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_temp_path",
+        lambda: str(temp_dir),
+    )
+    skill_dir = skills_root / "local-skill"
+    skill_dir.mkdir()
+    skill_dir.joinpath("SKILL.md").write_text("# Local\n", encoding="utf-8")
+
+    mgr = SkillManager(skills_root=str(skills_root))
+    assert mgr.get_skill("local-skill", runtime="local") is not None
+    assert mgr.get_skill("missing", runtime="local") is None
+
+    mgr.set_skill_active("local-skill", False)
+    assert mgr.get_skill("local-skill", runtime="local") is None
+
+
+def test_list_local_skill_files_returns_sorted_relative_auxiliary_files(
+    monkeypatch,
+    tmp_path: Path,
+):
+    data_dir = tmp_path / "data"
+    temp_dir = tmp_path / "temp"
+    skills_root = tmp_path / "skills"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    skill_dir = skills_root / "local-skill"
+    nested_dir = skill_dir / "scripts"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_data_path",
+        lambda: str(data_dir),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_temp_path",
+        lambda: str(temp_dir),
+    )
+    skill_dir.joinpath("SKILL.md").write_text("# Local\n", encoding="utf-8")
+    skill_dir.joinpath("README.md").write_text("readme", encoding="utf-8")
+    nested_dir.joinpath("run.py").write_text("print('ok')", encoding="utf-8")
+
+    mgr = SkillManager(skills_root=str(skills_root))
+    assert mgr.list_local_skill_files("local-skill") == [
+        "README.md",
+        "scripts/run.py",
+    ]

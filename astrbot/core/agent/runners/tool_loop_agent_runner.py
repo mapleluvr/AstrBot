@@ -281,6 +281,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._follow_up_seq = 0
         self._last_tool_name: str | None = None
         self._same_tool_streak = 0
+        self._activated_skills: set[str] = set()
 
         # These two are used for tool schema mode handling
         # We now have two modes:
@@ -460,7 +461,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     ) -> T.AsyncGenerator[LLMResponse, None]:
         """Yields chunks *and* a final LLMResponse."""
         payload = {
-            "contexts": self._sanitize_contexts_for_provider(self.run_context.messages),
+            "contexts": self._sanitize_contexts_for_provider(
+                self._messages_with_skill_reminder()
+            ),
             "func_tool": self._func_tool_for_provider(),
             "session_id": self.req.session_id,
             "extra_user_content_parts": self.req.extra_user_content_parts,  # list[ContentPart]
@@ -593,6 +596,24 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     def _should_fix_modalities_for_provider(self) -> bool:
         modalities = self.provider.provider_config.get("modalities", None)
         return isinstance(modalities, list)
+
+    def _messages_with_skill_reminder(self) -> list[Message]:
+        messages = list(self.run_context.messages)
+        activated_skills = getattr(self, "_activated_skills", set())
+        if activated_skills:
+            names = ", ".join(sorted(activated_skills))
+            messages.append(
+                Message(
+                    role="system",
+                    content=(
+                        "<system_reminder>"
+                        f"Activated skills this session: {names}. "
+                        "Call the `skill` tool again if you need to reload a skill's instructions."
+                        "</system_reminder>"
+                    ),
+                )
+            )
+        return messages
 
     def _func_tool_for_provider(self) -> ToolSet | None:
         if not self.req.func_tool:
@@ -991,6 +1012,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         ):
             tool_result_blocks_start = len(tool_call_result_blocks)
             tool_call_streak = self._track_tool_call_streak(func_tool_name)
+            _final_resp: CallToolResult | None = None
             yield _HandleFunctionToolsResult.from_message_chain(
                 MessageChain(
                     type="tool_call",
@@ -1075,7 +1097,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     **valid_params,  # 只传递有效的参数
                 )
 
-                _final_resp: CallToolResult | None = None
                 async for resp in self._iter_tool_executor_results(executor):  # type: ignore
                     if isinstance(resp, CallToolResult):
                         res = resp
@@ -1203,6 +1224,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     ),
                 )
 
+            if func_tool_name == "skill":
+                self._record_skill_activation(func_tool_args, _final_resp)
+
             if len(tool_call_result_blocks) > tool_result_blocks_start:
                 tool_result_content = str(tool_call_result_blocks[-1].content)
                 yield _HandleFunctionToolsResult.from_message_chain(
@@ -1226,6 +1250,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             yield _HandleFunctionToolsResult.from_tool_call_result_blocks(
                 tool_call_result_blocks
             )
+
+    def _record_skill_activation(
+        self,
+        tool_args: dict[str, T.Any],
+        tool_result: CallToolResult | None,
+    ) -> None:
+        skill_name = str(tool_args.get("name") or "").strip()
+        if not skill_name or tool_result is None:
+            return
+        if getattr(tool_result, "isError", False):
+            return
+        result_text = self._text_from_call_tool_result(tool_result).lstrip()
+        if result_text.startswith("error:"):
+            return
+        self._activated_skills.add(skill_name)
+
+    def _text_from_call_tool_result(self, tool_result: CallToolResult) -> str:
+        result_parts: list[str] = []
+        for content_item in tool_result.content or []:
+            if isinstance(content_item, TextContent):
+                result_parts.append(content_item.text)
+        return "\n\n".join(result_parts)
 
     def _build_tool_requery_context(
         self,

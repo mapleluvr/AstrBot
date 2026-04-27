@@ -14,6 +14,7 @@ from astrbot.core.subagent_runtime import SubAgentRuntimeResult
 from astrbot.core.tools.registry import builtin_tool
 
 _RUNTIME_UNAVAILABLE = "subagent_runtime_unavailable"
+_RUNTIME_DISABLED = "runtime_disabled"
 
 
 def _json_result(
@@ -36,6 +37,21 @@ def _runtime_unavailable() -> str:
             "details": None,
         },
     )
+
+
+def _runtime_disabled() -> str:
+    return _json_result(
+        False,
+        error={
+            "error_code": _RUNTIME_DISABLED,
+            "message": "Persistent sub-agent runtime is disabled.",
+            "details": None,
+        },
+    )
+
+
+def _manager_runtime_disabled(manager: Any) -> bool:
+    return getattr(manager, "runtime_enabled", True) is False
 
 
 def _get_runtime_manager(context: ContextWrapper[AstrAgentContext]) -> Any:
@@ -123,9 +139,26 @@ def _runtime_result_payload(
     )
 
 
+def _runtime_error_payload(result: SubAgentRuntimeResult) -> str:
+    error = result.error
+    return _json_result(
+        False,
+        error={
+            "error_code": error.error_code if error else "subagent_runtime_error",
+            "message": error.message
+            if error
+            else "Sub-agent runtime operation failed.",
+            "details": _json_safe(error.details) if error else None,
+        },
+    )
+
+
 def _runtime_run_payload(result: SubAgentRuntimeResult) -> str:
     if not result.ok:
         error = result.error
+        details = None
+        if error and error.error_code != "subagent_execution_failed":
+            details = _json_safe(error.details)
         return _json_result(
             False,
             error={
@@ -133,7 +166,7 @@ def _runtime_run_payload(result: SubAgentRuntimeResult) -> str:
                 "message": error.message
                 if error
                 else "Sub-agent runtime operation failed.",
-                "details": _json_safe(error.details) if error else None,
+                "details": details,
             },
         )
     return _json_result(True, data=_json_safe(result.data))
@@ -157,6 +190,8 @@ class ListSubAgentPresetsTool(FunctionTool[AstrAgentContext]):
         manager = _get_runtime_manager(context)
         if manager is None:
             return _runtime_unavailable()
+        if _manager_runtime_disabled(manager):
+            return _runtime_disabled()
         presets = manager.list_presets(runtime_mode="persistent")
         return _json_result(
             True,
@@ -227,6 +262,10 @@ class ListSubAgentsTool(FunctionTool[AstrAgentContext]):
         if manager is None:
             return _runtime_unavailable()
         instances = await manager.list_instances(context.context.event)
+        if isinstance(instances, SubAgentRuntimeResult):
+            if not instances.ok:
+                return _runtime_error_payload(instances)
+            instances = instances.data
         return _json_result(
             True,
             data={

@@ -198,11 +198,11 @@ def build_skills_prompt(skills: list[SkillInfo]) -> str:
     """Build the skills section of the system prompt.
 
     Generates a markdown-formatted skill inventory for the LLM.  Only
-    ``name`` and ``description`` are shown upfront; the LLM must read
-    the full ``SKILL.md`` before execution (progressive disclosure).
+    ``name`` and ``description`` are shown upfront; the LLM must load
+    the full ``SKILL.md`` through the dedicated skill tool before execution
+    (progressive disclosure).
     """
     skills_lines: list[str] = []
-    example_path = ""
     for skill in skills:
         display_name = _sanitize_skill_display_name(skill.name)
 
@@ -225,16 +225,7 @@ def build_skills_prompt(skills: list[SkillInfo]) -> str:
         skills_lines.append(
             f"- **{display_name}**: {description}\n  File: `{rendered_path}`"
         )
-        if not example_path:
-            example_path = rendered_path
     skills_block = "\n".join(skills_lines)
-    # Sanitize example_path — it may originate from sandbox cache (untrusted)
-    if example_path == "<skills_root>/<skill_name>/SKILL.md":
-        example_path = "<skills_root>/<skill_name>/SKILL.md"
-    else:
-        example_path = _sanitize_prompt_path_for_prompt(example_path)
-        example_path = example_path or "<skills_root>/<skill_name>/SKILL.md"
-    example_command = _build_skill_read_command_example(example_path)
 
     return (
         "## Skills\n\n"
@@ -251,10 +242,10 @@ def build_skills_prompt(skills: list[SkillInfo]) -> str:
         "explicitly, or if the task clearly matches the skill's description. "
         "*Never silently skip a matching skill* — either use it or briefly "
         "explain why you chose not to.\n"
-        "3. **Mandatory grounding** — Before executing any skill you MUST "
-        "first read its `SKILL.md` by running a shell command compatible "
-        "with the current runtime shell and using the **absolute path** "
-        f"shown above (e.g. `{example_command}`). "
+        "3. **SkillTool loading** — Before executing any skill you MUST "
+        "call the `skill` tool with the skill name to load its full `SKILL.md` "
+        "instructions. Do not use shell or filesystem tools to read `SKILL.md` "
+        "directly unless the `skill` tool is unavailable or returns an error. "
         "Never rely on memory or assumptions about a skill's content.\n"
         "4. **Progressive disclosure** — Load only what is directly "
         "referenced from `SKILL.md`:\n"
@@ -471,6 +462,40 @@ class SkillManager:
             self._save_config(config)
 
         return [skills_by_name[name] for name in sorted(skills_by_name)]
+
+    def get_skill(
+        self,
+        name: str,
+        *,
+        runtime: str = "local",
+        show_sandbox_path: bool = True,
+    ) -> SkillInfo | None:
+        """Look up one active skill by name using the same runtime rules as list_skills."""
+        for skill in self.list_skills(
+            active_only=True,
+            runtime=runtime,
+            show_sandbox_path=show_sandbox_path,
+        ):
+            if skill.name == name:
+                return skill
+        return None
+
+    def list_local_skill_files(self, name: str, max_files: int = 20) -> list[str]:
+        """List auxiliary local files for a skill, relative to the skill directory."""
+        skill = self.get_skill(name, runtime="local", show_sandbox_path=False)
+        if skill is None or not skill.local_exists:
+            return []
+
+        skill_md = Path(skill.path)
+        skill_dir = skill_md.parent
+        files: list[str] = []
+        for file_path in sorted(skill_dir.rglob("*")):
+            if not file_path.is_file() or file_path.name == "SKILL.md":
+                continue
+            files.append(file_path.relative_to(skill_dir).as_posix())
+            if len(files) >= max_files:
+                break
+        return files
 
     def is_sandbox_only_skill(self, name: str) -> bool:
         skill_dir = Path(self.skills_root) / name

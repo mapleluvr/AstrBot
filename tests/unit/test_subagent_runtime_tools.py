@@ -280,7 +280,7 @@ async def test_run_subagent_returns_structured_runtime_error():
         "error": {
             "error_code": "subagent_execution_failed",
             "message": "Sub-agent execution failed.",
-            "details": {"error": "provider unavailable"},
+            "details": None,
         },
     }
 

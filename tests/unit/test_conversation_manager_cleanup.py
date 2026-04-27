@@ -32,6 +32,28 @@ async def test_delete_conversation_triggers_registered_conversation_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_delete_current_conversation_resolves_shared_preference_cache_miss():
+    umo = "telegram:FriendMessage:user1"
+    db = FakeConversationDB()
+    manager = ConversationManager(db)
+    cleanup = AsyncMock()
+    manager.register_on_conversation_deleted(cleanup)
+
+    with (
+        patch(
+            "astrbot.core.conversation_mgr.sp.session_get",
+            new_callable=AsyncMock,
+            return_value="conversation-1",
+        ),
+        patch("astrbot.core.conversation_mgr.sp.session_remove", new_callable=AsyncMock),
+    ):
+        await manager.delete_conversation(umo)
+
+    assert db.deleted_conversations == ["conversation-1"]
+    cleanup.assert_awaited_once_with("conversation-1")
+
+
+@pytest.mark.asyncio
 async def test_delete_conversation_skips_cleanup_when_no_conversation_was_deleted():
     manager = ConversationManager(FakeConversationDB(deleted=False))
     cleanup = AsyncMock()

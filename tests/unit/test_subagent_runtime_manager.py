@@ -1,6 +1,8 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from astrbot.core.subagent_runtime import (
     AMBIGUOUS_INSTANCE,
@@ -26,8 +28,11 @@ class FakeDB:
         self.deleted_instances = []
         self.deleted_sessions = []
         self.deleted_conversations = []
+        self.create_error = None
 
     async def create_subagent_instance(self, **kwargs):
+        if self.create_error is not None:
+            raise self.create_error
         instance = SimpleNamespace(
             instance_id=f"instance-{self.next_id}",
             version=1,
@@ -203,6 +208,31 @@ def manager(config=None, *, tools=None, builtin_tools=None, skills=None):
     )
 
 
+class SlowCreateDB(FakeDB):
+    async def create_subagent_instance(self, **kwargs):
+        await asyncio.sleep(0)
+        return await super().create_subagent_instance(**kwargs)
+
+
+def manager_with_db(db, config=None, *, tools=None, builtin_tools=None, skills=None):
+    return SubAgentRuntimeManager(
+        db,
+        FakeToolManager(tools, builtin_tools),
+        FakePersonaManager(),
+        FakeConversationManager(),
+        config=config,
+        skill_manager=FakeSkillManager(skills or []),
+    )
+
+
+def enabled_runtime_config(config):
+    config = dict(config)
+    runtime = dict(config.get("runtime", {}))
+    runtime["enable"] = True
+    config["runtime"] = runtime
+    return config
+
+
 @pytest.mark.asyncio
 async def test_cleanup_for_session_deletes_persisted_session_instances():
     runtime = manager()
@@ -219,6 +249,38 @@ async def test_cleanup_for_conversation_deletes_persisted_conversation_instances
     await runtime.cleanup_for_conversation("conversation-1")
 
     assert runtime.db.deleted_conversations == ["conversation-1"]
+
+
+@pytest.mark.asyncio
+async def test_create_instance_rejects_when_runtime_is_disabled():
+    runtime = manager()
+    runtime.reload_from_config(
+        {
+            "runtime": {"enable": False},
+            "agents": [{"name": "researcher", "runtime_mode": "persistent"}],
+        }
+    )
+
+    result = await runtime.create_instance(FakeEvent(), "agent", "researcher")
+
+    assert result.ok is False
+    assert result.error.error_code == "runtime_disabled"
+
+
+@pytest.mark.asyncio
+async def test_list_instances_rejects_when_runtime_is_disabled():
+    runtime = manager()
+    runtime.reload_from_config(
+        {
+            "runtime": {"enable": False},
+            "agents": [{"name": "researcher", "runtime_mode": "persistent"}],
+        }
+    )
+
+    result = await runtime.list_instances(FakeEvent())
+
+    assert result.ok is False
+    assert result.error.error_code == "runtime_disabled"
 
 
 def test_reload_from_config_creates_persistent_presets_from_persona():
@@ -391,10 +453,12 @@ async def test_resolve_scope_session_uses_umo_as_scope_id():
 async def test_create_instance_rejects_duplicate_and_max_instances():
     runtime = manager()
     runtime.reload_from_config(
-        {
-            "max_instances_per_scope": 1,
-            "agents": [{"name": "researcher", "runtime_mode": "persistent"}],
-        }
+        enabled_runtime_config(
+            {
+                "max_instances_per_scope": 1,
+                "agents": [{"name": "researcher", "runtime_mode": "persistent"}],
+            }
+        )
     )
     event = FakeEvent()
 
@@ -413,11 +477,13 @@ async def test_create_instance_rejects_duplicate_and_max_instances():
 async def test_create_instance_rejects_missing_or_handoff_presets():
     runtime = manager()
     runtime.reload_from_config(
-        {
-            "agents": [
-                {"name": "legacy", "runtime_mode": "handoff"},
-            ]
-        }
+        enabled_runtime_config(
+            {
+                "agents": [
+                    {"name": "legacy", "runtime_mode": "handoff"},
+                ]
+            }
+        )
     )
     event = FakeEvent()
 
@@ -434,7 +500,9 @@ async def test_create_instance_rejects_missing_or_handoff_presets():
 async def test_create_instance_validates_tool_and_skill_overrides():
     runtime = manager(tools=["web_search"], skills=["summarize"])
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
 
@@ -462,16 +530,18 @@ async def test_create_instance_validates_tool_and_skill_overrides():
 async def test_create_instance_preserves_none_capabilities_and_rejects_inactive_tools():
     runtime = manager(tools=[("active_tool", True), ("inactive_tool", False)])
     runtime.reload_from_config(
-        {
-            "agents": [
-                {
-                    "name": "all_caps",
-                    "runtime_mode": "persistent",
-                    "tools": None,
-                    "skills": None,
-                }
-            ]
-        }
+        enabled_runtime_config(
+            {
+                "agents": [
+                    {
+                        "name": "all_caps",
+                        "runtime_mode": "persistent",
+                        "tools": None,
+                        "skills": None,
+                    }
+                ]
+            }
+        )
     )
     event = FakeEvent()
 
@@ -494,7 +564,9 @@ async def test_create_instance_preserves_none_capabilities_and_rejects_inactive_
 async def test_create_instance_accepts_active_builtin_tools_outside_full_tool_set():
     runtime = manager(builtin_tools=["astrbot_file_read_tool"])
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
 
@@ -513,7 +585,9 @@ async def test_create_instance_accepts_active_builtin_tools_outside_full_tool_se
 async def test_create_instance_rejects_runtime_management_tool_overrides():
     runtime = manager(builtin_tools=["run_subagent"])
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
 
@@ -535,6 +609,7 @@ async def test_create_instance_persists_resolved_fields_and_limits():
     runtime.reload_from_config(
         {
             "runtime": {
+                "enable": True,
                 "max_persisted_turns": 9,
                 "max_persisted_tokens": 1234,
             },
@@ -573,10 +648,78 @@ async def test_create_instance_persists_resolved_fields_and_limits():
 
 
 @pytest.mark.asyncio
+async def test_create_instance_accepts_system_prompt_override():
+    runtime = manager()
+    runtime.reload_from_config(
+        {
+            "runtime": {"enable": True},
+            "agents": [
+                {
+                    "name": "researcher",
+                    "runtime_mode": "persistent",
+                    "system_prompt": "Preset prompt",
+                }
+            ],
+        }
+    )
+
+    created = await runtime.create_instance(
+        FakeEvent(),
+        "agent",
+        "researcher",
+        overrides={"system_prompt": "Override prompt"},
+    )
+
+    assert created.ok is True
+    assert created.data.system_prompt == "Override prompt"
+
+
+@pytest.mark.asyncio
+async def test_create_instance_converts_integrity_error_to_duplicate_result():
+    db = FakeDB()
+    db.create_error = IntegrityError("insert", {}, Exception("duplicate"))
+    runtime = manager_with_db(db)
+    runtime.reload_from_config(
+        {
+            "runtime": {"enable": True},
+            "agents": [{"name": "researcher", "runtime_mode": "persistent"}],
+        }
+    )
+
+    result = await runtime.create_instance(FakeEvent(), "agent", "researcher")
+
+    assert result.ok is False
+    assert result.error.error_code == INSTANCE_EXISTS
+
+
+@pytest.mark.asyncio
+async def test_create_instance_serializes_max_count_check_per_scope():
+    runtime = manager_with_db(SlowCreateDB())
+    runtime.reload_from_config(
+        {
+            "runtime": {"enable": True, "max_instances_per_scope": 1},
+            "agents": [{"name": "researcher", "runtime_mode": "persistent"}],
+        }
+    )
+    event = FakeEvent()
+
+    first, second = await asyncio.gather(
+        runtime.create_instance(event, "agent-a", "researcher"),
+        runtime.create_instance(event, "agent-b", "researcher"),
+    )
+
+    assert [first.ok, second.ok].count(True) == 1
+    failed = second if first.ok else first
+    assert failed.error.error_code == MAX_INSTANCES_REACHED
+
+
+@pytest.mark.asyncio
 async def test_get_instance_reports_ambiguous_name_across_scopes():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
 
@@ -593,7 +736,9 @@ async def test_get_instance_reports_ambiguous_name_across_scopes():
 async def test_list_instances_returns_conversation_and_session_instances():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     conversation = await runtime.create_instance(
@@ -616,7 +761,9 @@ async def test_list_instances_returns_conversation_and_session_instances():
 async def test_get_instance_success_explicit_scope_and_not_found():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(
@@ -639,7 +786,9 @@ async def test_get_instance_success_explicit_scope_and_not_found():
 async def test_update_instance_validates_and_persists_allowed_updates():
     runtime = manager(tools=["search"], skills=["summarize"])
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -674,7 +823,9 @@ async def test_update_instance_validates_and_persists_allowed_updates():
 async def test_update_instance_accepts_active_builtin_tools_outside_full_tool_set():
     runtime = manager(builtin_tools=["astrbot_file_read_tool"])
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -693,7 +844,9 @@ async def test_update_instance_accepts_active_builtin_tools_outside_full_tool_se
 async def test_update_instance_rejects_invalid_tool_and_skill_updates():
     runtime = manager(tools=["search"], skills=["summarize"])
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -716,7 +869,9 @@ async def test_update_instance_rejects_invalid_tool_and_skill_updates():
 async def test_update_instance_rejects_unsafe_fields_before_db_update():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -741,7 +896,9 @@ async def test_update_instance_rejects_unsafe_fields_before_db_update():
 async def test_mutations_return_busy_when_instance_is_locked():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -767,7 +924,9 @@ async def test_mutations_return_busy_when_instance_is_locked():
 async def test_update_instance_returns_not_found_when_db_update_returns_none():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -785,7 +944,9 @@ async def test_update_instance_returns_not_found_when_db_update_returns_none():
 async def test_reset_instance_clears_history_with_optimistic_versioning():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -806,7 +967,9 @@ async def test_reset_instance_clears_history_with_optimistic_versioning():
 async def test_reset_instance_returns_version_conflict_when_save_fails():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -822,7 +985,9 @@ async def test_reset_instance_returns_version_conflict_when_save_fails():
 async def test_delete_instance_removes_instance_and_returns_deleted_data():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -839,7 +1004,9 @@ async def test_delete_instance_removes_instance_and_returns_deleted_data():
 async def test_update_reset_and_delete_propagate_lookup_errors():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -959,15 +1126,17 @@ async def test_instance_lock_reports_busy():
 async def test_run_instance_injects_begin_dialogs_once_and_saves_history():
     runtime = manager()
     runtime.reload_from_config(
-        {
-            "agents": [
-                {
-                    "name": "researcher",
-                    "runtime_mode": "persistent",
-                    "begin_dialogs": [{"role": "assistant", "content": "ready"}],
-                }
-            ]
-        }
+        enabled_runtime_config(
+            {
+                "agents": [
+                    {
+                        "name": "researcher",
+                        "runtime_mode": "persistent",
+                        "begin_dialogs": [{"role": "assistant", "content": "ready"}],
+                    }
+                ]
+            }
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -1029,7 +1198,9 @@ async def test_run_instance_injects_begin_dialogs_once_and_saves_history():
 async def test_run_instance_propagates_lookup_errors_and_busy_lock():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -1048,7 +1219,9 @@ async def test_run_instance_propagates_lookup_errors_and_busy_lock():
 async def test_run_instance_returns_version_conflict_when_history_save_is_stale():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     await runtime.create_instance(event, "agent", "researcher")
@@ -1073,7 +1246,9 @@ async def test_run_instance_returns_version_conflict_when_history_save_is_stale(
 async def test_run_instance_catches_execution_error_and_releases_lock():
     runtime = manager()
     runtime.reload_from_config(
-        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
     )
     event = FakeEvent()
     created = await runtime.create_instance(event, "agent", "researcher")
@@ -1088,5 +1263,5 @@ async def test_run_instance_catches_execution_error_and_releases_lock():
     assert result.ok is False
     assert result.error.error_code == "subagent_execution_failed"
     assert result.error.message == "Sub-agent execution failed."
-    assert result.error.details == {"error": "provider unavailable with secret stack"}
+    assert result.error.details is None
     assert runtime.is_instance_locked(created.data.instance_id) is False

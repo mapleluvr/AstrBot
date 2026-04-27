@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import asdict, dataclass
 from typing import Any
+
+from sqlalchemy.exc import IntegrityError
 
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.context.truncator import ContextTruncator
@@ -19,6 +22,7 @@ INVALID_TOOL = "invalid_tool"
 INVALID_SKILL = "invalid_skill"
 AMBIGUOUS_INSTANCE = "ambiguous_instance"
 INVALID_UPDATE_FIELD = "invalid_update_field"
+RUNTIME_DISABLED = "runtime_disabled"
 
 _MUTABLE_INSTANCE_FIELDS = {
     "provider_id",
@@ -119,6 +123,7 @@ class SubAgentRuntimeManager:
         self.skill_manager = skill_manager
         self.presets: dict[str, SubAgentPreset] = {}
         self._instance_locks: dict[str, bool] = {}
+        self._scope_create_locks: dict[str, asyncio.Lock] = {}
         self.runtime_enabled = False
         self.max_instances_per_scope = 8
         self.max_persisted_turns = 20
@@ -219,6 +224,8 @@ class SubAgentRuntimeManager:
         await self.db.delete_subagent_instances_for_conversation(conversation_id)
 
     async def list_instances(self, event):
+        if not self.runtime_enabled:
+            return self._runtime_disabled_result()
         umo, _, conversation_id = await self.resolve_scope(event, "conversation")
         conversation_instances = await self.db.list_subagent_instances(
             umo=umo,
@@ -233,6 +240,8 @@ class SubAgentRuntimeManager:
         return conversation_instances + session_instances
 
     async def get_instance(self, event, name, scope_type=None) -> SubAgentRuntimeResult:
+        if not self.runtime_enabled:
+            return self._runtime_disabled_result()
         if scope_type is not None:
             umo, resolved_scope_type, scope_id = await self.resolve_scope(
                 event, scope_type
@@ -284,6 +293,8 @@ class SubAgentRuntimeManager:
         scope_type=None,
         overrides=None,
     ) -> SubAgentRuntimeResult:
+        if not self.runtime_enabled:
+            return self._runtime_disabled_result()
         preset = self.presets.get(preset_name)
         if preset is None or preset.runtime_mode != "persistent":
             return SubAgentRuntimeResult.failure(
@@ -293,6 +304,27 @@ class SubAgentRuntimeManager:
 
         overrides = overrides or {}
         umo, resolved_scope_type, scope_id = await self.resolve_scope(event, scope_type)
+        scope_key = f"{umo}\0{resolved_scope_type}\0{scope_id}"
+        create_lock = self._scope_create_locks.setdefault(scope_key, asyncio.Lock())
+        async with create_lock:
+            return await self._create_instance_locked(
+                umo,
+                resolved_scope_type,
+                scope_id,
+                name,
+                preset,
+                overrides,
+            )
+
+    async def _create_instance_locked(
+        self,
+        umo,
+        resolved_scope_type,
+        scope_id,
+        name,
+        preset,
+        overrides,
+    ) -> SubAgentRuntimeResult:
         existing = await self.db.get_subagent_instance_by_name(
             umo=umo,
             scope_type=resolved_scope_type,
@@ -334,22 +366,32 @@ class SubAgentRuntimeManager:
                 {"skill": invalid_skill},
             )
 
-        instance = await self.db.create_subagent_instance(
-            umo=umo,
-            scope_type=resolved_scope_type,
-            scope_id=scope_id,
-            name=name,
-            preset_name=preset.name,
-            provider_id=overrides.get("provider_id", preset.provider_id),
-            persona_id=overrides.get("persona_id", preset.persona_id),
-            system_prompt=overrides.get("instructions", preset.instructions),
-            system_prompt_delta=overrides.get("system_prompt_delta"),
-            tools=list(tools) if tools is not None else None,
-            skills=list(skills) if skills is not None else None,
-            history=[],
-            max_persisted_turns=self.max_persisted_turns,
-            max_persisted_tokens=self.max_persisted_tokens,
+        system_prompt = overrides.get(
+            "system_prompt",
+            overrides.get("instructions", preset.instructions),
         )
+        try:
+            instance = await self.db.create_subagent_instance(
+                umo=umo,
+                scope_type=resolved_scope_type,
+                scope_id=scope_id,
+                name=name,
+                preset_name=preset.name,
+                provider_id=overrides.get("provider_id", preset.provider_id),
+                persona_id=overrides.get("persona_id", preset.persona_id),
+                system_prompt=system_prompt,
+                system_prompt_delta=overrides.get("system_prompt_delta"),
+                tools=list(tools) if tools is not None else None,
+                skills=list(skills) if skills is not None else None,
+                history=[],
+                max_persisted_turns=self.max_persisted_turns,
+                max_persisted_tokens=self.max_persisted_tokens,
+            )
+        except IntegrityError:
+            return SubAgentRuntimeResult.failure(
+                INSTANCE_EXISTS,
+                "Sub-agent instance already exists in this scope.",
+            )
         return SubAgentRuntimeResult.success(instance)
 
     async def update_instance(
@@ -484,11 +526,10 @@ class SubAgentRuntimeManager:
                     input_text,
                     image_urls,
                 )
-            except Exception as e:
+            except Exception:
                 return SubAgentRuntimeResult.failure(
                     SUBAGENT_EXECUTION_FAILED,
                     "Sub-agent execution failed.",
-                    {"error": str(e)},
                 )
             final_response = execution.get("final_response", "")
             history = execution.get("history", messages)
@@ -713,6 +754,13 @@ class SubAgentRuntimeManager:
             "scope_id": instance.scope_id,
             "version": instance.version,
         }
+
+    @staticmethod
+    def _runtime_disabled_result() -> SubAgentRuntimeResult:
+        return SubAgentRuntimeResult.failure(
+            RUNTIME_DISABLED,
+            "Persistent sub-agent runtime is disabled.",
+        )
 
     @staticmethod
     async def _maybe_await(value):

@@ -30,6 +30,7 @@ from astrbot.core.message.message_event_result import (
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.provider.entites import ProviderRequest
 from astrbot.core.provider.register import llm_tools
+from astrbot.core.skills.skill_manager import SkillManager, build_skills_prompt
 from astrbot.core.tools.computer_tools import (
     ExecuteShellTool,
     FileDownloadTool,
@@ -755,6 +756,21 @@ async def execute_persistent_subagent(
     prov_settings: dict = plugin_context.get_config(umo=umo).get(
         "provider_settings", {}
     )
+    runtime = str(prov_settings.get("computer_use_runtime", "local"))
+    skills_filter = getattr(instance, "skills", [])
+    if skills_filter is None or skills_filter:
+        skills = SkillManager().list_skills(active_only=True, runtime=runtime)
+        if skills_filter is not None:
+            allowed = set(skills_filter)
+            skills = [skill for skill in skills if skill.name in allowed]
+        if skills:
+            system_prompt = f"{system_prompt}\n{build_skills_prompt(skills)}".strip()
+            if runtime == "none":
+                system_prompt += (
+                    "\nUser has not enabled the Computer Use feature. "
+                    "You cannot use shell or Python to perform skills. "
+                    "If you need to use these capabilities, ask the user to enable Computer Use in the AstrBot WebUI -> Config."
+                )
     llm_resp = await plugin_context.tool_loop_agent(
         event=event,
         chat_provider_id=provider_id,

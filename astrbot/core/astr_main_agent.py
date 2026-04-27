@@ -73,6 +73,7 @@ from astrbot.core.tools.knowledge_base_tools import (
     retrieve_knowledge_base,
 )
 from astrbot.core.tools.message_tools import SendMessageToUserTool
+from astrbot.core.tools.skill_tool import SkillTool
 from astrbot.core.tools.subagent_runtime_tools import SUBAGENT_RUNTIME_MANAGEMENT_TOOLS
 from astrbot.core.tools.web_search_tools import (
     BaiduWebSearchTool,
@@ -205,6 +206,13 @@ def _has_persistent_subagent_preset(subagent_orchestrator) -> bool:
     return any(
         getattr(preset, "runtime_mode", None) == "persistent" for preset in presets
     )
+
+
+def _subagent_runtime_enabled(orch_cfg: dict) -> bool:
+    runtime_cfg = orch_cfg.get("runtime", {})
+    if isinstance(runtime_cfg, dict) and "enable" in runtime_cfg:
+        return bool(runtime_cfg.get("enable"))
+    return bool(orch_cfg.get("runtime_enable", False))
 
 
 async def _get_session_conv(
@@ -452,6 +460,14 @@ async def _ensure_persona_and_skills(
                 tool = tmgr.get_func(tool_name)
                 if tool and tool.active:
                     persona_toolset.add_tool(tool)
+    if skills:
+        persona_toolset.add_tool(
+            SkillTool(
+                allowed_skills={skill.name: skill for skill in skills},
+                skill_manager=skill_manager,
+                runtime=runtime,
+            )
+        )
     if not req.func_tool:
         req.func_tool = persona_toolset
     else:
@@ -503,7 +519,7 @@ async def _ensure_persona_and_skills(
         for tool in so.handoffs:
             req.func_tool.add_tool(tool)
 
-        if _has_persistent_subagent_preset(so):
+        if _has_persistent_subagent_preset(so) and _subagent_runtime_enabled(orch_cfg):
             for tool_cls in SUBAGENT_RUNTIME_MANAGEMENT_TOOLS:
                 req.func_tool.add_tool(tmgr.get_builtin_tool(tool_cls))
 

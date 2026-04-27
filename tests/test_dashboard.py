@@ -274,11 +274,11 @@ def test_subagent_page_serialization_preserves_runtime_schema_fields():
     ).read_text(encoding="utf-8")
 
     assert "runtime_mode?: string" in page
-    assert "skills?: string[]" in page
+    assert "skills?: string[] | null" in page
     assert "runtime_mode: (a?.runtime_mode ?? 'handoff').toString()" in page
-    assert "skills: Array.isArray(a?.skills) ? a.skills.map" in page
+    assert "skills: a?.skills === null ? null : Array.isArray(a?.skills)" in page
     assert "runtime_mode: agent.runtime_mode ?? 'handoff'" in page
-    assert "skills: agent.skills ?? []" in page
+    assert "skills: agent.skills === null ? null : (agent.skills ?? [])" in page
     assert "...raw" in page
     assert "...a" in page
     assert "const { __key, ...agentConfig } = agent" in page

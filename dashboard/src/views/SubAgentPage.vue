@@ -258,7 +258,7 @@ type SubAgentItem = {
   enabled: boolean
   provider_id?: string
   runtime_mode?: string
-  skills?: string[]
+  skills?: string[] | null
 }
 
 type SubAgentConfig = {
@@ -340,7 +340,7 @@ function normalizeConfig(raw: any): SubAgentConfig {
     enabled: a?.enabled !== false,
     provider_id: (a?.provider_id ?? undefined) as string | undefined,
     runtime_mode: (a?.runtime_mode ?? 'handoff').toString(),
-    skills: Array.isArray(a?.skills) ? a.skills.map((skill: any) => skill.toString()) : []
+    skills: a?.skills === null ? null : Array.isArray(a?.skills) ? a.skills.map((skill: any) => skill.toString()) : []
   }))
 
   return { ...raw, main_enable, remove_main_duplicate_tools, agents }
@@ -362,7 +362,7 @@ function toSerializableConfig(config: SubAgentConfig) {
         enabled: agent.enabled,
         provider_id: agent.provider_id ?? null,
         runtime_mode: agent.runtime_mode ?? 'handoff',
-        skills: agent.skills ?? []
+        skills: agent.skills === null ? null : (agent.skills ?? [])
       }
     })
   }
