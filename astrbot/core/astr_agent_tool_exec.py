@@ -43,6 +43,7 @@ from astrbot.core.tools.computer_tools import (
     PythonTool,
 )
 from astrbot.core.tools.message_tools import SendMessageToUserTool
+from astrbot.core.tools.skill_tool import SkillTool
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.history_saver import persist_agent_history
 from astrbot.core.utils.image_ref_utils import is_supported_image_ref
@@ -758,8 +759,10 @@ async def execute_persistent_subagent(
     )
     runtime = str(prov_settings.get("computer_use_runtime", "local"))
     skills_filter = getattr(instance, "skills", [])
+    skill_manager = SkillManager()
+    skills = []
     if skills_filter is None or skills_filter:
-        skills = SkillManager().list_skills(active_only=True, runtime=runtime)
+        skills = skill_manager.list_skills(active_only=True, runtime=runtime)
         if skills_filter is not None:
             allowed = set(skills_filter)
             skills = [skill for skill in skills if skill.name in allowed]
@@ -771,6 +774,15 @@ async def execute_persistent_subagent(
                     "You cannot use shell or Python to perform skills. "
                     "If you need to use these capabilities, ask the user to enable Computer Use in the AstrBot WebUI -> Config."
                 )
+    if skills:
+        if toolset is None:
+            toolset = ToolSet()
+        skill_tool = SkillTool(
+            skill_manager=skill_manager,
+            runtime=runtime,
+        )
+        skill_tool.allowed_skills = {skill.name: skill for skill in skills}
+        toolset.add_tool(skill_tool)
     llm_resp = await plugin_context.tool_loop_agent(
         event=event,
         chat_provider_id=provider_id,
@@ -784,12 +796,12 @@ async def execute_persistent_subagent(
         stream=prov_settings.get("streaming_response", False),
     )
     final_response = getattr(llm_resp, "completion_text", "") or ""
+    usage = getattr(llm_resp, "usage", None)
+    token_usage = usage.total if usage is not None else None
     return {
         "final_response": final_response,
         "history": [*messages, {"role": "assistant", "content": final_response}],
-        "token_usage": getattr(
-            llm_resp, "token_usage", getattr(instance, "token_usage", 0)
-        ),
+        "token_usage": token_usage,
     }
 
 

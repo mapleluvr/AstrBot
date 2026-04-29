@@ -3,13 +3,15 @@ from types import SimpleNamespace
 import mcp
 import pytest
 
-from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core import astr_agent_tool_exec as tool_exec
+from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_tool_exec import (
     FunctionToolExecutor,
     execute_persistent_subagent,
 )
 from astrbot.core.message.components import Image
+from astrbot.core.provider.entities import LLMResponse, TokenUsage
+from astrbot.core.tools.skill_tool import SkillTool
 
 
 class _DummyEvent:
@@ -457,7 +459,9 @@ async def test_execute_persistent_subagent_injects_selected_skills_prompt(
     context = SimpleNamespace(
         get_current_chat_provider_id=_fake_get_current_chat_provider_id,
         tool_loop_agent=_fake_tool_loop_agent,
-        get_config=lambda **_kwargs: {"provider_settings": {"computer_use_runtime": "local"}},
+        get_config=lambda **_kwargs: {
+            "provider_settings": {"computer_use_runtime": "local"}
+        },
     )
     event = _DummyEvent([])
     event.get_extra = lambda key: context if key == "subagent_runtime_context" else None
@@ -478,3 +482,120 @@ async def test_execute_persistent_subagent_injects_selected_skills_prompt(
     )
 
     assert captured["system_prompt"] == "system\nSKILLS: summarize"
+
+
+@pytest.mark.asyncio
+async def test_execute_persistent_subagent_adds_skill_tool_for_selected_skills(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict = {}
+
+    class FakeSkillManager:
+        def list_skills(self, *, active_only=True, runtime="local"):
+            assert active_only is True
+            assert runtime == "local"
+            return [SimpleNamespace(name="summarize", description="Summarize text")]
+
+    def fake_build_skills_prompt(skills):
+        return "SKILLS: " + ",".join(skill.name for skill in skills)
+
+    async def _fake_tool_loop_agent(**kwargs):
+        captured.update(kwargs)
+        return LLMResponse(
+            role="assistant",
+            completion_text="ok",
+            usage=TokenUsage(input_other=2, input_cached=1, output=4),
+        )
+
+    async def _fake_get_current_chat_provider_id(_umo):
+        return "provider-id"
+
+    monkeypatch.setattr(tool_exec, "SkillManager", FakeSkillManager, raising=False)
+    monkeypatch.setattr(
+        tool_exec,
+        "build_skills_prompt",
+        fake_build_skills_prompt,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AstrAgentContext",
+        lambda context, event: SimpleNamespace(context=context, event=event),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AgentContextWrapper",
+        lambda context: ContextWrapper(context=context),
+    )
+    context = SimpleNamespace(
+        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
+        tool_loop_agent=_fake_tool_loop_agent,
+        get_config=lambda **_kwargs: {
+            "provider_settings": {"computer_use_runtime": "local"}
+        },
+    )
+    event = _DummyEvent([])
+    event.get_extra = lambda key: context if key == "subagent_runtime_context" else None
+    instance = SimpleNamespace(
+        tools=[],
+        skills=["summarize"],
+        provider_id=None,
+        system_prompt="system",
+        system_prompt_delta=None,
+        token_usage=99,
+    )
+
+    result = await execute_persistent_subagent(
+        event,
+        instance,
+        [{"role": "user", "content": "hello"}],
+        "hello",
+    )
+
+    skill_tool = captured["tools"].get_tool("skill")
+    assert isinstance(skill_tool, SkillTool)
+    assert sorted(skill_tool.allowed_skills) == ["summarize"]
+    assert skill_tool.runtime == "local"
+    assert result["token_usage"] == 7
+
+
+@pytest.mark.asyncio
+async def test_execute_persistent_subagent_returns_none_token_usage_without_llm_usage(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_tool_loop_agent(**kwargs):
+        return LLMResponse(role="assistant", completion_text="ok")
+
+    async def _fake_get_current_chat_provider_id(_umo):
+        return "provider-id"
+
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AstrAgentContext",
+        lambda context, event: SimpleNamespace(context=context, event=event),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AgentContextWrapper",
+        lambda context: ContextWrapper(context=context),
+    )
+    context = SimpleNamespace(
+        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
+        tool_loop_agent=_fake_tool_loop_agent,
+        get_config=lambda **_kwargs: {"provider_settings": {}},
+    )
+    event = _DummyEvent([])
+    event.get_extra = lambda key: context if key == "subagent_runtime_context" else None
+    instance = SimpleNamespace(
+        tools=[],
+        skills=[],
+        provider_id=None,
+        system_prompt="system",
+        system_prompt_delta=None,
+        token_usage=99,
+    )
+
+    result = await execute_persistent_subagent(
+        event,
+        instance,
+        [{"role": "user", "content": "hello"}],
+        "hello",
+    )
+
+    assert result["token_usage"] is None
