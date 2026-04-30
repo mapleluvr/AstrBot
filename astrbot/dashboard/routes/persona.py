@@ -102,6 +102,7 @@ class PersonaRoute(Route):
                         "custom_error_message": persona.custom_error_message,
                         "folder_id": persona.folder_id,
                         "sort_order": persona.sort_order,
+                        "provider_id": persona.provider_id,
                         "created_at": persona.created_at.isoformat()
                         if persona.created_at
                         else None,
@@ -128,6 +129,7 @@ class PersonaRoute(Route):
             custom_error_message = data.get("custom_error_message")
             folder_id = data.get("folder_id")  # None 表示根目录
             sort_order = data.get("sort_order", 0)
+            provider_id = data.get("provider_id") or None
 
             if not persona_id:
                 return Response().error("人格ID不能为空").__dict__
@@ -157,6 +159,7 @@ class PersonaRoute(Route):
                 custom_error_message=custom_error_message,
                 folder_id=folder_id,
                 sort_order=sort_order,
+                provider_id=provider_id,
             )
 
             return (
@@ -173,6 +176,7 @@ class PersonaRoute(Route):
                             "custom_error_message": persona.custom_error_message,
                             "folder_id": persona.folder_id,
                             "sort_order": persona.sort_order,
+                            "provider_id": persona.provider_id,
                             "created_at": persona.created_at.isoformat()
                             if persona.created_at
                             else None,
@@ -203,6 +207,8 @@ class PersonaRoute(Route):
             skills = data.get("skills")
             has_custom_error_message = "custom_error_message" in data
             custom_error_message = data.get("custom_error_message")
+            has_provider_id = "provider_id" in data
+            provider_id = data.get("provider_id")
 
             if not persona_id:
                 return Response().error("缺少必要参数: persona_id").__dict__
@@ -234,6 +240,8 @@ class PersonaRoute(Route):
                 update_kwargs["skills"] = skills
             if has_custom_error_message:
                 update_kwargs["custom_error_message"] = custom_error_message
+            if has_provider_id:
+                update_kwargs["provider_id"] = provider_id
 
             await self.persona_mgr.update_persona(**update_kwargs)
 
