@@ -59,6 +59,7 @@ class PersonaRoute(Route):
                             "tools": persona.tools,
                             "skills": persona.skills,
                             "custom_error_message": persona.custom_error_message,
+                            "provider_id": persona.provider_id,
                             "folder_id": persona.folder_id,
                             "sort_order": persona.sort_order,
                             "created_at": persona.created_at.isoformat()
