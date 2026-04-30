@@ -63,6 +63,7 @@ class SQLiteDatabase(BaseDatabase):
             await self._ensure_persona_folder_columns(conn)
             await self._ensure_persona_skills_column(conn)
             await self._ensure_persona_custom_error_message_column(conn)
+            await self._ensure_persona_provider_id_column(conn)
             await self._ensure_platform_message_history_checkpoint_column(conn)
             await conn.commit()
 
@@ -106,6 +107,16 @@ class SQLiteDatabase(BaseDatabase):
         if "custom_error_message" not in columns:
             await conn.execute(
                 text("ALTER TABLE personas ADD COLUMN custom_error_message TEXT")
+            )
+
+    async def _ensure_persona_provider_id_column(self, conn) -> None:
+        """确保 personas 表有 provider_id 列。"""
+        result = await conn.execute(text("PRAGMA table_info(personas)"))
+        columns = {row[1] for row in result.fetchall()}
+
+        if "provider_id" not in columns:
+            await conn.execute(
+                text("ALTER TABLE personas ADD COLUMN provider_id VARCHAR(255) DEFAULT NULL")
             )
 
     async def _ensure_platform_message_history_checkpoint_column(self, conn) -> None:
