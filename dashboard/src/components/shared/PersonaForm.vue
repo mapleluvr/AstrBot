@@ -567,7 +567,7 @@ export default {
                 tools: persona.tools === null ? null : [...(persona.tools || [])],
                 skills: persona.skills === null ? null : [...(persona.skills || [])],
                 folder_id: persona.folder_id,
-                provider_id: persona.provider_id || null
+                provider_id: persona.provider_id ?? null
             };
             // 根据 tools 的值设置 toolSelectValue
             this.toolSelectValue = persona.tools === null ? '0' : '1';
