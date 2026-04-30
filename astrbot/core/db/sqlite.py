@@ -116,7 +116,9 @@ class SQLiteDatabase(BaseDatabase):
 
         if "provider_id" not in columns:
             await conn.execute(
-                text("ALTER TABLE personas ADD COLUMN provider_id VARCHAR(255) DEFAULT NULL")
+                text(
+                    "ALTER TABLE personas ADD COLUMN provider_id VARCHAR(255) DEFAULT NULL"
+                )
             )
 
     async def _ensure_platform_message_history_checkpoint_column(self, conn) -> None:
@@ -1270,6 +1272,7 @@ class SQLiteDatabase(BaseDatabase):
         custom_error_message=None,
         folder_id=None,
         sort_order=0,
+        provider_id: str | None = None,
     ):
         """Insert a new persona record."""
         async with self.get_db() as session:
@@ -1284,6 +1287,7 @@ class SQLiteDatabase(BaseDatabase):
                     custom_error_message=custom_error_message,
                     folder_id=folder_id,
                     sort_order=sort_order,
+                    provider_id=provider_id,
                 )
                 session.add(new_persona)
                 await session.flush()
@@ -1314,6 +1318,7 @@ class SQLiteDatabase(BaseDatabase):
         tools=NOT_GIVEN,
         skills=NOT_GIVEN,
         custom_error_message=NOT_GIVEN,
+        provider_id: str | None | object = NOT_GIVEN,
     ):
         """Update a persona's system prompt or begin dialogs."""
         async with self.get_db() as session:
@@ -1331,6 +1336,8 @@ class SQLiteDatabase(BaseDatabase):
                     values["skills"] = skills
                 if custom_error_message is not NOT_GIVEN:
                     values["custom_error_message"] = custom_error_message
+                if provider_id is not NOT_GIVEN:
+                    values["provider_id"] = provider_id
                 if not values:
                     return None
                 query = query.values(**values)

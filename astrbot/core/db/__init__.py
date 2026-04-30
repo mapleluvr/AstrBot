@@ -28,6 +28,7 @@ from astrbot.core.db.po import (
     SubAgentInstance,
     WebChatThread,
 )
+from astrbot.core.sentinels import NOT_GIVEN
 
 
 @dataclass
@@ -568,6 +569,7 @@ class BaseDatabase(abc.ABC):
         custom_error_message: str | None = None,
         folder_id: str | None = None,
         sort_order: int = 0,
+        provider_id: str | None = None,
     ) -> Persona:
         """Insert a new persona record.
 
@@ -602,6 +604,7 @@ class BaseDatabase(abc.ABC):
         tools: list[str] | None = None,
         skills: list[str] | None = None,
         custom_error_message: str | None = None,
+        provider_id: str | None | object = NOT_GIVEN,
     ) -> Persona | None:
         """Update a persona's system prompt or begin dialogs."""
         ...
