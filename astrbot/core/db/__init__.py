@@ -582,6 +582,7 @@ class BaseDatabase(abc.ABC):
             custom_error_message: Optional persona-level fallback error message
             folder_id: Optional folder ID to place the persona in (None means root)
             sort_order: Sort order within the folder (default 0)
+            provider_id: Optional provider ID to associate with the persona
         """
         ...
 
