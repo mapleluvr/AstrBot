@@ -142,6 +142,7 @@ class PersonaManager:
         tools: list[str] | None | object = NOT_GIVEN,
         skills: list[str] | None | object = NOT_GIVEN,
         custom_error_message: str | None | object = NOT_GIVEN,
+        provider_id: str | None | object = NOT_GIVEN,
     ):
         """更新指定 persona 的信息。tools 参数为 None 时表示使用所有工具，空列表表示不使用任何工具"""
         existing_persona = await self.db.get_persona_by_id(persona_id)
@@ -154,6 +155,8 @@ class PersonaManager:
             update_kwargs["skills"] = skills
         if custom_error_message is not NOT_GIVEN:
             update_kwargs["custom_error_message"] = custom_error_message
+        if provider_id is not NOT_GIVEN:
+            update_kwargs["provider_id"] = provider_id
 
         persona = await self.db.update_persona(
             persona_id,
@@ -322,6 +325,7 @@ class PersonaManager:
         custom_error_message: str | None = None,
         folder_id: str | None = None,
         sort_order: int = 0,
+        provider_id: str | None = None,
     ) -> Persona:
         """创建新的 persona。
 
@@ -333,6 +337,7 @@ class PersonaManager:
             skills: Skills 列表，None 表示使用所有 Skills，空列表表示不使用任何 Skills
             folder_id: 所属文件夹 ID，None 表示根目录
             sort_order: 排序顺序
+            provider_id: 关联的 provider ID
         """
         if await self.db.get_persona_by_id(persona_id):
             raise ValueError(f"Persona with ID {persona_id} already exists.")
@@ -345,6 +350,7 @@ class PersonaManager:
             custom_error_message=custom_error_message,
             folder_id=folder_id,
             sort_order=sort_order,
+            provider_id=provider_id,
         )
         self.personas.append(new_persona)
         self.get_v3_persona_data()
@@ -370,6 +376,7 @@ class PersonaManager:
                 "tools": persona.tools,
                 "skills": persona.skills,
                 "custom_error_message": persona.custom_error_message,
+                "provider_id": persona.provider_id,
             }
             for persona in self.personas
         ]
