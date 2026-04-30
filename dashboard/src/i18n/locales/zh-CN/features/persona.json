@@ -138,6 +138,9 @@
       "deleteError": "删除文件夹失败"
     }
   },
+  "providerPanel": {
+    "title": "模型提供商 (可选)"
+  },
   "moveDialog": {
     "title": "移动到文件夹",
     "description": "为 \"{name}\" 选择目标文件夹",

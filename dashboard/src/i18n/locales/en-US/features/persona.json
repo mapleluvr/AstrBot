@@ -138,6 +138,9 @@
       "deleteError": "Failed to delete folder"
     }
   },
+  "providerPanel": {
+    "title": "Model Provider (Optional)"
+  },
   "moveDialog": {
     "title": "Move to Folder",
     "description": "Select a destination folder for \"{name}\"",

@@ -336,6 +336,19 @@
                                 </v-btn>
                             </v-expansion-panel-text>
                         </v-expansion-panel>
+
+                        <v-expansion-panel value="provider">
+                            <v-expansion-panel-title>
+                                <v-icon class="mr-2">mdi-brain</v-icon>
+                                {{ tm('providerPanel.title') }}
+                            </v-expansion-panel-title>
+                            <v-expansion-panel-text>
+                                <ProviderSelector
+                                    v-model="personaForm.provider_id"
+                                    provider-type="chat_completion"
+                                />
+                            </v-expansion-panel-text>
+                        </v-expansion-panel>
                             </v-expansion-panels>
                         </v-col>
                     </v-row>
@@ -365,6 +378,7 @@ import {
     askForConfirmation as askForConfirmationDialog,
     useConfirmDialog
 } from '@/utils/confirmDialog';
+import ProviderSelector from '@/components/shared/ProviderSelector.vue';
 
 export default {
     name: 'PersonaForm',
@@ -387,6 +401,9 @@ export default {
         }
     },
     emits: ['update:modelValue', 'saved', 'error', 'deleted'],
+    components: {
+        ProviderSelector
+    },
     setup() {
         const { tm } = useModuleI18n('features/persona');
         const confirmDialog = useConfirmDialog();
@@ -411,7 +428,8 @@ export default {
                 begin_dialogs: [],
                 tools: [],
                 skills: [],
-                folder_id: null
+                folder_id: null,
+                provider_id: null
             },
             personaIdRules: [
                 v => !!v || this.tm('validation.required'),
@@ -532,7 +550,8 @@ export default {
                 begin_dialogs: [],
                 tools: [],
                 skills: [],
-                folder_id: this.currentFolderId
+                folder_id: this.currentFolderId,
+                provider_id: null
             };
             this.toolSelectValue = '0';
             this.skillSelectValue = '0';
@@ -547,7 +566,8 @@ export default {
                 begin_dialogs: [...(persona.begin_dialogs || [])],
                 tools: persona.tools === null ? null : [...(persona.tools || [])],
                 skills: persona.skills === null ? null : [...(persona.skills || [])],
-                folder_id: persona.folder_id
+                folder_id: persona.folder_id,
+                provider_id: persona.provider_id || null
             };
             // 根据 tools 的值设置 toolSelectValue
             this.toolSelectValue = persona.tools === null ? '0' : '1';
@@ -556,7 +576,7 @@ export default {
         },
 
         getDefaultExpandedPanels() {
-            return this.$vuetify.display.smAndDown ? [] : ['tools', 'skills', 'dialogs'];
+            return this.$vuetify.display.smAndDown ? [] : ['tools', 'skills', 'dialogs', 'provider'];
         },
 
         closeDialog() {

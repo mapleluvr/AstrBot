@@ -138,6 +138,9 @@
             "deleteError": "Ошибка удаления папки"
         }
     },
+    "providerPanel": {
+        "title": "Провайдер модели (необязательно)"
+    },
     "moveDialog": {
         "title": "Перемещение",
         "description": "Выберите папку для «{name}»",
