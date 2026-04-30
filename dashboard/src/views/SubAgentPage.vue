@@ -178,6 +178,16 @@
                   </div>
 
                   <v-textarea
+                    v-model="agent.system_prompt"
+                    :label="tm('form.systemPromptLabel')"
+                    variant="outlined"
+                    density="comfortable"
+                    auto-grow
+                    rows="3"
+                    hide-details="auto"
+                  />
+
+                  <v-textarea
                     v-model="agent.public_description"
                     :label="tm('form.descriptionLabel')"
                     variant="outlined"
@@ -254,6 +264,7 @@ type SubAgentItem = {
   __key: string
   name: string
   persona_id: string
+  system_prompt: string
   public_description: string
   enabled: boolean
   provider_id?: string
@@ -336,6 +347,7 @@ function normalizeConfig(raw: any): SubAgentConfig {
     __key: `${Date.now()}_${i}_${Math.random().toString(16).slice(2)}`,
     name: (a?.name ?? '').toString(),
     persona_id: (a?.persona_id ?? '').toString(),
+    system_prompt: (a?.system_prompt ?? '').toString(),
     public_description: (a?.public_description ?? '').toString(),
     enabled: a?.enabled !== false,
     provider_id: (a?.provider_id ?? undefined) as string | undefined,
@@ -358,6 +370,7 @@ function toSerializableConfig(config: SubAgentConfig) {
         ...agentConfig,
         name: agent.name,
         persona_id: agent.persona_id,
+        system_prompt: agent.system_prompt,
         public_description: agent.public_description,
         enabled: agent.enabled,
         provider_id: agent.provider_id ?? null,
@@ -397,6 +410,7 @@ function addAgent() {
     __key: key,
     name: '',
     persona_id: '',
+    system_prompt: '',
     public_description: '',
     enabled: true,
     provider_id: undefined,
@@ -440,7 +454,7 @@ function validateBeforeSave(): boolean {
       return false
     }
     seen.add(name)
-    if (!agent.persona_id) {
+    if (!(agent.persona_id || agent.system_prompt.trim())) {
       toast(tm('messages.personaMissing', { name }), 'warning')
       return false
     }

@@ -1,0 +1,88 @@
+{
+  "header": {
+    "eyebrow": "协作"
+  },
+  "page": {
+    "title": "代理组",
+    "subtitle": "基于持久化 SubAgent 预设创建可复用的协作团队。"
+  },
+  "actions": {
+    "refresh": "刷新",
+    "save": "保存",
+    "addPreset": "添加预设",
+    "addMember": "添加成员",
+    "duplicate": "复制",
+    "delete": "删除",
+    "close": "关闭"
+  },
+  "section": {
+    "presets": "预设",
+    "presetSettings": "预设设置",
+    "members": "成员",
+    "collaboration": "协作",
+    "limits": "限制"
+  },
+  "form": {
+    "presetName": "预设名称",
+    "enabled": "启用",
+    "initialRecipients": "初始接收成员",
+    "initialRecipientsHint": "接收第一条任务消息的成员。",
+    "collaborationPrompt": "协作提示词",
+    "principles": "协作原则",
+    "principlesNote": "作为每个成员都会收到的简短协作规则使用。",
+    "principlesExample": "例：协作原则 = [\"说明假设\", \"标记分歧\", \"优先给出具体文件引用\"]。每个成员在回应前都会看到这些规则。",
+    "collaborationPromptNote": "注入本次群组运行提示词，用来约束成员如何协作。",
+    "collaborationPromptExample": "例：\"Planner 先提出实现顺序，Reviewer 挑战风险，所有最终意见都必须列出未解决阻塞。\" 这段内容会进入整个群组的运行提示词。",
+    "summaryPreset": "总结 SubAgent 预设",
+    "summaryIncludePrivate": "总结包含成员私聊记录",
+    "tokenLimit": "Token 限制",
+    "timeLimitSeconds": "时间限制（秒）",
+    "memberName": "成员名称",
+    "memberSource": "Member source",
+    "memberSourceSubAgent": "SubAgent",
+    "memberSourcePersona": "Persona",
+    "memberSubAgentPreset": "SubAgent preset"
+  },
+  "cards": {
+    "unnamed": "未命名代理组",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "memberCount": "{count} 个成员"
+  },
+  "empty": {
+    "title": "暂无代理组预设",
+    "subtitle": "添加一个预设来定义协作团队。",
+    "action": "创建预设"
+  },
+  "messages": {
+    "loadConfigFailed": "加载代理组配置失败",
+    "loadSubagentsFailed": "加载 SubAgent 预设失败",
+    "saveSuccess": "保存成功",
+    "saveFailed": "保存失败",
+    "unsavedChangesNotice": "当前页面有未保存的更改，请保存后再离开。",
+    "unsavedChangesLeaveConfirm": "存在未保存的更改，离开后会丢失。继续？",
+    "unsavedChangesReloadConfirm": "存在未保存的更改，刷新会丢弃这些更改。继续？",
+    "presetNameMissing": "有代理组预设缺少名称",
+    "presetNameInvalid": "预设名称无效：请使用小写字母、数字和下划线，并以字母开头",
+    "presetNameDuplicate": "重复的预设名称：{name}",
+    "memberNameMissing": "{preset} 中有成员缺少名称",
+    "memberNameInvalid": "{preset} 中存在无效成员名称",
+    "memberNameDuplicate": "{preset} 中存在重复成员名称：{name}",
+    "memberPresetMissing": "{preset} 中的成员 {member} 未选择 SubAgent 预设",
+    "initialRecipientInvalid": "{preset} 中的初始接收成员 {name} 不是启用成员",
+    "nameRequired": "名称不能为空",
+    "namePattern": "只能使用小写字母、数字和下划线",
+    "memberPersonaMissing": "Member {member} in {preset} has no Persona selected"
+  },
+  "preview": {
+    "persona": "Persona",
+    "provider": "Provider",
+    "tools": "Tools",
+    "skills": "Skills",
+    "systemPrompt": "System prompt",
+    "defaultProvider": "Default",
+    "all": "All",
+    "none": "None",
+    "subAgentMissing": "No SubAgent preset selected"
+  }
+}

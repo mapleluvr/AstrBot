@@ -70,7 +70,8 @@
       "persistent": "Persistent"
     },
     "skillsLabel": "技能",
-    "skillsHint": "选择此代理使用的技能。留空则继承人格设定中的所有技能。"
+    "skillsHint": "选择此代理使用的技能。留空则继承人格设定中的所有技能。",
+    "systemPromptLabel": "System prompt"
   },
   "messages": {
     "loadConfigFailed": "获取配置失败",

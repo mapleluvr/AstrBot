@@ -10,6 +10,7 @@ from astrbot.core.agent.tool import FunctionTool
 TFunctionTool = TypeVar("TFunctionTool", bound=type[FunctionTool])
 
 _BUILTIN_TOOL_MODULES = (
+    "astrbot.core.tools.agent_group_tools",
     "astrbot.core.tools.computer_tools",
     "astrbot.core.tools.cron_tools",
     "astrbot.core.tools.knowledge_base_tools",

@@ -69,7 +69,8 @@
             "persistent": "Persistent"
         },
         "skillsLabel": "Навыки",
-        "skillsHint": "Выберите навыки для агента. Оставьте пустым для наследования навыков персоны."
+        "skillsHint": "Выберите навыки для агента. Оставьте пустым для наследования навыков персоны.",
+        "systemPromptLabel": "System prompt"
     },
     "messages": {
         "loadConfigFailed": "Не удалось загрузить конфигурацию",

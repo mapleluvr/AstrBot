@@ -15,6 +15,7 @@ from astrbot.core.subagent_runtime import (
     PRESET_NOT_FOUND,
     VERSION_CONFLICT,
     SubAgentRuntimeManager,
+    normalize_subagent_orchestrator_config,
 )
 
 
@@ -342,11 +343,29 @@ def test_reload_from_config_uses_existing_subagent_keys():
     )
 
     presets = runtime.list_presets(runtime_mode="persistent")
+    presets_by_name = {preset.name: preset for preset in presets}
 
-    assert [preset.name for preset in presets] == ["writer"]
-    assert presets[0].instructions == "Write carefully."
-    assert presets[0].tools == ["tool_a"]
-    assert presets[0].skills == ["skill_a"]
+    assert set(presets_by_name) == {"writer", "agent_group_summary"}
+    assert presets_by_name["writer"].instructions == "Write carefully."
+    assert presets_by_name["writer"].tools == ["tool_a"]
+    assert presets_by_name["writer"].skills == ["skill_a"]
+    assert presets_by_name["agent_group_summary"].tools == []
+    assert presets_by_name["agent_group_summary"].skills == []
+
+
+def test_summary_preset_backfill_only_checks_presence():
+    raw_summary = {
+        "name": "agent_group_summary",
+        "enabled": False,
+        "runtime_mode": "handoff",
+        "system_prompt": "User edited summary prompt.",
+        "tools": None,
+        "custom_user_field": {"kept": True},
+    }
+
+    normalized = normalize_subagent_orchestrator_config({"agents": [raw_summary]})
+
+    assert normalized["agents"] == [raw_summary]
 
 
 def test_reload_from_config_defaults_to_handoff_and_skips_invalid_agents():
@@ -364,9 +383,10 @@ def test_reload_from_config_defaults_to_handoff_and_skips_invalid_agents():
 
     presets = runtime.list_presets()
 
-    assert len(presets) == 1
-    assert presets[0].name == "legacy"
-    assert presets[0].runtime_mode == "handoff"
+    presets_by_name = {preset.name: preset for preset in presets}
+    assert set(presets_by_name) == {"legacy", "agent_group_summary"}
+    assert presets_by_name["legacy"].runtime_mode == "handoff"
+    assert presets_by_name["agent_group_summary"].runtime_mode == "persistent"
 
 
 def test_reload_from_config_preserves_none_capability_semantics_from_persona():
@@ -494,6 +514,33 @@ async def test_create_instance_rejects_missing_or_handoff_presets():
     assert missing.error.error_code == PRESET_NOT_FOUND
     assert handoff.ok is False
     assert handoff.error.error_code == PRESET_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_create_instance_from_persona_uses_persona_prompt_and_capabilities():
+    runtime = manager(tools=["persona_tool"], skills=["persona_skill"])
+    runtime.reload_from_config(enabled_runtime_config({"agents": []}))
+    runtime.persona_mgr.personas["review_persona"] = SimpleNamespace(
+        prompt="Persona prompt",
+        tools=["persona_tool"],
+        skills=["persona_skill"],
+        _begin_dialogs_processed=[],
+    )
+
+    created = await runtime.create_instance_from_persona(
+        FakeEvent(),
+        "reviewer",
+        "review_persona",
+        overrides={"system_prompt_delta": "Group run instructions."},
+    )
+
+    assert created.ok is True
+    assert created.data.name == "reviewer"
+    assert created.data.persona_id == "review_persona"
+    assert created.data.system_prompt == "Persona prompt"
+    assert created.data.system_prompt_delta == "Group run instructions."
+    assert created.data.tools == ["persona_tool"]
+    assert created.data.skills == ["persona_skill"]
 
 
 @pytest.mark.asyncio
@@ -1001,6 +1048,25 @@ async def test_delete_instance_removes_instance_and_returns_deleted_data():
 
 
 @pytest.mark.asyncio
+async def test_delete_instance_by_id_removes_instance_without_event_scope():
+    runtime = manager()
+    runtime.reload_from_config(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    created = await runtime.create_instance(event, "agent", "researcher")
+
+    deleted = await runtime.delete_instance_by_id(created.data.instance_id)
+
+    assert deleted.ok is True
+    assert deleted.data == {"instance_id": created.data.instance_id}
+    assert runtime.db.deleted_instances == [created.data.instance_id]
+    assert runtime.db.instances == []
+
+
+@pytest.mark.asyncio
 async def test_update_reset_and_delete_propagate_lookup_errors():
     runtime = manager()
     runtime.reload_from_config(
@@ -1177,6 +1243,7 @@ async def test_run_instance_injects_begin_dialogs_once_and_saves_history():
         "scope_type": "conversation",
         "scope_id": "conv-1",
         "version": 2,
+        "token_usage": 7,
     }
     assert calls[0]["messages"] == [
         {"role": "assistant", "content": "ready"},

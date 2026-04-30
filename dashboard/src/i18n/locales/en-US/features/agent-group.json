@@ -1,0 +1,88 @@
+{
+  "header": {
+    "eyebrow": "Collaboration"
+  },
+  "page": {
+    "title": "Agent Groups",
+    "subtitle": "Create reusable teams from persistent SubAgent presets for collaborative runs."
+  },
+  "actions": {
+    "refresh": "Refresh",
+    "save": "Save",
+    "addPreset": "Add Preset",
+    "addMember": "Add Member",
+    "duplicate": "Duplicate",
+    "delete": "Delete",
+    "close": "Close"
+  },
+  "section": {
+    "presets": "Presets",
+    "presetSettings": "Preset Settings",
+    "members": "Members",
+    "collaboration": "Collaboration",
+    "limits": "Limits"
+  },
+  "form": {
+    "presetName": "Preset name",
+    "enabled": "Enabled",
+    "initialRecipients": "Initial recipients",
+    "initialRecipientsHint": "Members that receive the first task message.",
+    "collaborationPrompt": "Collaboration prompt",
+    "principles": "Principles",
+    "principlesNote": "Applied as short operating rules shared with every group member.",
+    "principlesExample": "Example: Principles = [\"State assumptions\", \"Flag disagreement\", \"Prefer concrete file references\"]. Each member sees these as collaboration rules before responding.",
+    "collaborationPromptNote": "Injected into the group run prompt to shape how members coordinate.",
+    "collaborationPromptExample": "Example: \"Planner proposes the implementation order, reviewer challenges risks, and all final opinions must include unresolved blockers.\" This is added to the run prompt for the whole group.",
+    "summaryPreset": "Summary SubAgent preset",
+    "summaryIncludePrivate": "Include private member transcripts in summary",
+    "tokenLimit": "Token limit",
+    "timeLimitSeconds": "Time limit (seconds)",
+    "memberName": "Member name",
+    "memberSource": "Member source",
+    "memberSourceSubAgent": "SubAgent",
+    "memberSourcePersona": "Persona",
+    "memberSubAgentPreset": "SubAgent preset"
+  },
+  "preview": {
+    "persona": "Persona",
+    "provider": "Provider",
+    "tools": "Tools",
+    "skills": "Skills",
+    "systemPrompt": "System prompt",
+    "defaultProvider": "Default",
+    "all": "All",
+    "none": "None",
+    "subAgentMissing": "No SubAgent preset selected"
+  },
+  "cards": {
+    "unnamed": "Untitled Group",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "memberCount": "{count} members"
+  },
+  "empty": {
+    "title": "No Agent Group Presets",
+    "subtitle": "Add a preset to define a collaborative team.",
+    "action": "Create Preset"
+  },
+  "messages": {
+    "loadConfigFailed": "Failed to load agent group config",
+    "loadSubagentsFailed": "Failed to load SubAgent presets",
+    "saveSuccess": "Saved successfully",
+    "saveFailed": "Failed to save",
+    "unsavedChangesNotice": "You have unsaved changes on this page. Save before leaving.",
+    "unsavedChangesLeaveConfirm": "You have unsaved changes. Leaving will discard them. Continue?",
+    "unsavedChangesReloadConfirm": "You have unsaved changes. Reloading will discard them. Continue?",
+    "presetNameMissing": "An agent group preset is missing a name",
+    "presetNameInvalid": "Invalid preset name: use lowercase letters, numbers, and underscores, starting with a letter",
+    "presetNameDuplicate": "Duplicate preset name: {name}",
+    "memberNameMissing": "A member in {preset} is missing a name",
+    "memberNameInvalid": "Invalid member name in {preset}",
+    "memberNameDuplicate": "Duplicate member name in {preset}: {name}",
+    "memberPresetMissing": "Member {member} in {preset} has no SubAgent preset selected",
+    "memberPersonaMissing": "Member {member} in {preset} has no Persona selected",
+    "initialRecipientInvalid": "Initial recipient {name} in {preset} is not an enabled member",
+    "nameRequired": "Name is required",
+    "namePattern": "Lowercase letters, numbers, underscore only"
+  }
+}

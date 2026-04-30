@@ -10,6 +10,7 @@ from sqlmodel import col, delete, desc, func, or_, select, text, update
 
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentGroupRun,
     ApiKey,
     Attachment,
     ChatUIProject,
@@ -441,6 +442,134 @@ class SQLiteDatabase(BaseDatabase):
                 await session.execute(
                     delete(SubAgentInstance).where(col(SubAgentInstance.umo) == umo),
                 )
+
+    # ====
+    # Agent Group Run Management
+    # ====
+
+    async def create_agent_group_run(
+        self,
+        *,
+        umo: str,
+        conversation_id: str | None,
+        workspace_id: str,
+        preset_name: str,
+        task: str,
+        status: str,
+        members: list,
+        messages: list,
+        final_opinions: dict,
+        summary: str | None,
+        token_usage: dict,
+        metadata: dict,
+    ) -> AgentGroupRun:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                run = AgentGroupRun(
+                    umo=umo,
+                    conversation_id=conversation_id,
+                    workspace_id=workspace_id,
+                    preset_name=preset_name,
+                    task=task,
+                    status=status,
+                    members=members,
+                    messages=messages,
+                    final_opinions=final_opinions,
+                    summary=summary,
+                    token_usage=token_usage,
+                    metadata_json=metadata,
+                )
+                session.add(run)
+                await session.flush()
+                await session.refresh(run)
+                return run
+
+    async def get_agent_group_run(self, run_id: str) -> AgentGroupRun | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(AgentGroupRun).where(col(AgentGroupRun.run_id) == run_id),
+            )
+            return result.scalar_one_or_none()
+
+    async def get_active_agent_group_run_for_workspace(
+        self,
+        workspace_id: str,
+    ) -> AgentGroupRun | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(AgentGroupRun)
+                .where(
+                    col(AgentGroupRun.workspace_id) == workspace_id,
+                    col(AgentGroupRun.status).in_(["active", "waiting_for_input"]),
+                )
+                .order_by(desc(AgentGroupRun.created_at))
+                .limit(1),
+            )
+            return result.scalar_one_or_none()
+
+    async def list_agent_group_runs(
+        self,
+        *,
+        umo: str | None = None,
+        workspace_id: str | None = None,
+        status: str | None = None,
+    ) -> list[AgentGroupRun]:
+        async with self.get_db() as session:
+            session: AsyncSession
+            query = select(AgentGroupRun)
+            if umo is not None:
+                query = query.where(col(AgentGroupRun.umo) == umo)
+            if workspace_id is not None:
+                query = query.where(col(AgentGroupRun.workspace_id) == workspace_id)
+            if status is not None:
+                query = query.where(col(AgentGroupRun.status) == status)
+            query = query.order_by(desc(AgentGroupRun.created_at))
+            result = await session.execute(query)
+            return list(result.scalars().all())
+
+    async def save_agent_group_state(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        members: list,
+        messages: list,
+        final_opinions: dict,
+        summary: str | None,
+        token_usage: dict,
+        metadata: dict,
+        expected_version: int,
+    ) -> AgentGroupRun | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                result = await session.execute(
+                    update(AgentGroupRun)
+                    .where(
+                        col(AgentGroupRun.run_id) == run_id,
+                        col(AgentGroupRun.version) == expected_version,
+                    )
+                    .values(
+                        status=status,
+                        members=members,
+                        messages=messages,
+                        final_opinions=final_opinions,
+                        summary=summary,
+                        token_usage=token_usage,
+                        metadata_json=metadata,
+                        version=expected_version + 1,
+                    )
+                    .execution_options(synchronize_session="fetch"),
+                )
+                if result.rowcount == 0:
+                    return None
+                loaded = await session.execute(
+                    select(AgentGroupRun).where(col(AgentGroupRun.run_id) == run_id),
+                )
+                return loaded.scalar_one_or_none()
 
     # ====
     # Conversation Management

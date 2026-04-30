@@ -6,6 +6,7 @@ from quart import jsonify, request
 from astrbot.core import logger
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
+from astrbot.core.subagent_runtime import normalize_subagent_orchestrator_config
 
 from .route import Response, Route, RouteContext
 
@@ -30,36 +31,13 @@ class SubAgentRoute(Route):
     async def get_config(self):
         try:
             cfg = self.core_lifecycle.astrbot_config
-            data = cfg.get("subagent_orchestrator")
-
-            # First-time access: return a sane default instead of erroring.
-            if not isinstance(data, dict):
-                data = {
-                    "main_enable": False,
-                    "remove_main_duplicate_tools": False,
-                    "agents": [],
-                }
-
-            # Backward compatibility: older config used `enable`.
-            if (
-                isinstance(data, dict)
-                and "main_enable" not in data
-                and "enable" in data
-            ):
-                data["main_enable"] = bool(data.get("enable", False))
-
-            # Ensure required keys exist.
-            data.setdefault("main_enable", False)
-            data.setdefault("remove_main_duplicate_tools", False)
-            data.setdefault("agents", [])
-
-            # Backward/forward compatibility: ensure each agent contains provider_id.
-            # None means follow global/default provider settings.
-            if isinstance(data.get("agents"), list):
-                for a in data["agents"]:
-                    if isinstance(a, dict):
-                        a.setdefault("provider_id", None)
-                        a.setdefault("persona_id", None)
+            data = normalize_subagent_orchestrator_config(
+                cfg.get("subagent_orchestrator")
+            )
+            if data != cfg.get("subagent_orchestrator"):
+                cfg["subagent_orchestrator"] = data
+                cfg.save_config()
+                await self._reload_subagent_config(data)
             return jsonify(Response().ok(data=data).__dict__)
         except Exception as e:
             logger.error(traceback.format_exc())
@@ -72,30 +50,32 @@ class SubAgentRoute(Route):
                 return jsonify(Response().error("配置必须为 JSON 对象").__dict__)
 
             cfg = self.core_lifecycle.astrbot_config
+            data = normalize_subagent_orchestrator_config(data)
             cfg["subagent_orchestrator"] = data
 
             # Persist to cmd_config.json
             # AstrBotConfigManager does not expose a `save()` method; persist via AstrBotConfig.
             cfg.save_config()
 
-            # Reload dynamic handoff tools if orchestrator exists
-            orch = getattr(self.core_lifecycle, "subagent_orchestrator", None)
-            if orch is not None:
-                result = orch.reload_from_config(data)
-                if inspect.isawaitable(result):
-                    await result
-            runtime_manager = getattr(
-                self.core_lifecycle, "subagent_runtime_manager", None
-            )
-            if runtime_manager is not None:
-                result = runtime_manager.reload_from_config(data)
-                if inspect.isawaitable(result):
-                    await result
+            await self._reload_subagent_config(data)
 
             return jsonify(Response().ok(message="保存成功").__dict__)
         except Exception as e:
             logger.error(traceback.format_exc())
             return jsonify(Response().error(f"保存 subagent 配置失败: {e!s}").__dict__)
+
+    async def _reload_subagent_config(self, data: dict) -> None:
+        # Reload dynamic handoff tools if orchestrator exists.
+        orch = getattr(self.core_lifecycle, "subagent_orchestrator", None)
+        if orch is not None:
+            result = orch.reload_from_config(data)
+            if inspect.isawaitable(result):
+                await result
+        runtime_manager = getattr(self.core_lifecycle, "subagent_runtime_manager", None)
+        if runtime_manager is not None:
+            result = runtime_manager.reload_from_config(data)
+            if inspect.isawaitable(result):
+                await result
 
     async def get_available_tools(self):
         """Return all registered tools (name/description/parameters/active/origin).

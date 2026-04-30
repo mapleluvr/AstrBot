@@ -69,7 +69,8 @@
       "persistent": "Persistent"
     },
     "skillsLabel": "Skills",
-    "skillsHint": "Select skills for this agent. Leave empty to inherit persona skills."
+    "skillsHint": "Select skills for this agent. Leave empty to inherit persona skills.",
+    "systemPromptLabel": "System prompt"
   },
   "messages": {
     "loadConfigFailed": "Failed to load config",

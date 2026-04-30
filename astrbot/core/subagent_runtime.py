@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -23,6 +24,66 @@ INVALID_SKILL = "invalid_skill"
 AMBIGUOUS_INSTANCE = "ambiguous_instance"
 INVALID_UPDATE_FIELD = "invalid_update_field"
 RUNTIME_DISABLED = "runtime_disabled"
+AGENT_GROUP_SUMMARY_PRESET_NAME = "agent_group_summary"
+
+
+def default_agent_group_summary_preset() -> dict[str, Any]:
+    return {
+        "name": AGENT_GROUP_SUMMARY_PRESET_NAME,
+        "enabled": True,
+        "runtime_mode": "persistent",
+        "persona_id": None,
+        "provider_id": None,
+        "public_description": "Summarizes completed Agent Group runs.",
+        "system_prompt": (
+            "You summarize completed Agent Group runs for the Local Agent. "
+            "Use only the provided transcript and final opinions. "
+            "Return a concise final answer with decisions, disagreements, "
+            "risks, and next steps."
+        ),
+        "tools": [],
+        "skills": [],
+    }
+
+
+def normalize_subagent_orchestrator_config(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        config = copy.deepcopy(raw)
+    else:
+        config = {
+            "main_enable": False,
+            "remove_main_duplicate_tools": False,
+            "agents": [],
+        }
+
+    if "main_enable" not in config and "enable" in config:
+        config["main_enable"] = bool(config.get("enable", False))
+    config.setdefault("main_enable", False)
+    config.setdefault("remove_main_duplicate_tools", False)
+
+    agents = config.get("agents")
+    if not isinstance(agents, list):
+        agents = []
+    normalized_agents = []
+    has_summary = False
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        normalized = copy.deepcopy(agent)
+        if normalized.get("name") == AGENT_GROUP_SUMMARY_PRESET_NAME:
+            has_summary = True
+            normalized_agents.append(normalized)
+            continue
+        normalized.setdefault("provider_id", None)
+        normalized.setdefault("persona_id", None)
+        normalized_agents.append(normalized)
+
+    if not has_summary:
+        normalized_agents.append(default_agent_group_summary_preset())
+
+    config["agents"] = normalized_agents
+    return config
+
 
 _MUTABLE_INSTANCE_FIELDS = {
     "provider_id",
@@ -132,6 +193,7 @@ class SubAgentRuntimeManager:
             self.reload_from_config(config)
 
     def reload_from_config(self, cfg):
+        cfg = normalize_subagent_orchestrator_config(cfg)
         runtime_cfg = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
         if not isinstance(runtime_cfg, dict):
             runtime_cfg = {}
@@ -154,6 +216,7 @@ class SubAgentRuntimeManager:
         self.presets = {preset.name: preset for preset in self.normalize_presets(cfg)}
 
     def normalize_presets(self, cfg) -> list[SubAgentPreset]:
+        cfg = normalize_subagent_orchestrator_config(cfg)
         presets = []
         for agent in cfg.get("agents", []):
             if not isinstance(agent, dict):
@@ -394,6 +457,59 @@ class SubAgentRuntimeManager:
             )
         return SubAgentRuntimeResult.success(instance)
 
+    async def create_instance_from_persona(
+        self,
+        event,
+        name,
+        persona_id,
+        scope_type=None,
+        overrides=None,
+    ) -> SubAgentRuntimeResult:
+        if not self.runtime_enabled:
+            return self._runtime_disabled_result()
+        persona_id = str(persona_id or "").strip()
+        if not persona_id:
+            return SubAgentRuntimeResult.failure(
+                PRESET_NOT_FOUND,
+                "Persona was not found.",
+            )
+        persona = self.persona_mgr.get_persona_v3_by_id(persona_id)
+        if persona is None:
+            return SubAgentRuntimeResult.failure(
+                PRESET_NOT_FOUND,
+                "Persona was not found.",
+            )
+
+        preset = SubAgentPreset(
+            name=f"persona:{persona_id}",
+            runtime_mode="persistent",
+            instructions=self._persona_value(persona, "prompt")
+            or self._persona_value(persona, "system_prompt"),
+            provider_id=self._persona_value(persona, "provider_id"),
+            persona_id=persona_id,
+            tools=self._capability_value({}, persona, "tools"),
+            skills=self._capability_value({}, persona, "skills"),
+            begin_dialogs=list(
+                self._persona_value(persona, "_begin_dialogs_processed")
+                or self._persona_value(persona, "begin_dialogs")
+                or []
+            ),
+        )
+
+        overrides = overrides or {}
+        umo, resolved_scope_type, scope_id = await self.resolve_scope(event, scope_type)
+        scope_key = f"{umo}\0{resolved_scope_type}\0{scope_id}"
+        create_lock = self._scope_create_locks.setdefault(scope_key, asyncio.Lock())
+        async with create_lock:
+            return await self._create_instance_locked(
+                umo,
+                resolved_scope_type,
+                scope_id,
+                name,
+                preset,
+                overrides,
+            )
+
     async def update_instance(
         self,
         event,
@@ -483,6 +599,15 @@ class SubAgentRuntimeManager:
             )
         await self.db.delete_subagent_instance(loaded.data.instance_id)
         return SubAgentRuntimeResult.success(loaded.data)
+
+    async def delete_instance_by_id(self, instance_id) -> SubAgentRuntimeResult:
+        if self.is_instance_locked(instance_id):
+            return SubAgentRuntimeResult.failure(
+                INSTANCE_BUSY,
+                "Sub-agent instance is busy.",
+            )
+        await self.db.delete_subagent_instance(instance_id)
+        return SubAgentRuntimeResult.success({"instance_id": instance_id})
 
     async def run_instance(
         self,
@@ -753,6 +878,7 @@ class SubAgentRuntimeManager:
             "scope_type": instance.scope_type,
             "scope_id": instance.scope_id,
             "version": instance.version,
+            "token_usage": getattr(instance, "token_usage", 0),
         }
 
     @staticmethod

@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
 from astrbot.api import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
@@ -13,6 +14,63 @@ from .util import check_admin_permission, is_local_runtime, workspace_root
 _COMPUTER_RUNTIME_TOOL_CONFIG = {
     "provider_settings.computer_use_runtime": ("local", "sandbox"),
 }
+
+
+def _agent_group_workspace_context(
+    context: ContextWrapper[AstrAgentContext],
+) -> tuple[Any, str, str] | None:
+    event = context.context.event
+    if not hasattr(event, "get_extra"):
+        return None
+    member_context = event.get_extra("agent_group_member_context")
+    helper_context = event.get_extra("agent_group_helper_context")
+    run_id = None
+    member_name = None
+    if isinstance(member_context, dict):
+        run_id = member_context.get("run_id")
+        member_name = member_context.get("member_name")
+    if not run_id and isinstance(helper_context, dict):
+        run_id = helper_context.get("run_id")
+        member_name = helper_context.get("creator_member")
+    if not run_id or not member_name:
+        return None
+    manager = getattr(context.context.context, "agent_group_runtime_manager", None)
+    if manager is None:
+        return None
+    return manager, str(run_id), str(member_name)
+
+
+def _agent_group_error_text(result: Any) -> str:
+    error = getattr(result, "error", None)
+    if error is None:
+        return "agent_group_workspace_error: Agent group workspace operation failed."
+    return f"{error.error_code}: {error.message}"
+
+
+async def _agent_group_workspace_cwd(
+    context: ContextWrapper[AstrAgentContext],
+) -> tuple[str | None, str | None]:
+    workspace_context = _agent_group_workspace_context(context)
+    if workspace_context is None:
+        return None, None
+    manager, run_id, member_name = workspace_context
+    result = await manager.resolve_workspace_file_path(run_id, member_name, ".")
+    if not getattr(result, "ok", False):
+        return None, _agent_group_error_text(result)
+    return str(result.data["path"]), None
+
+
+async def _acquire_agent_group_write_lease(
+    context: ContextWrapper[AstrAgentContext],
+) -> tuple[Any | None, str | None]:
+    workspace_context = _agent_group_workspace_context(context)
+    if workspace_context is None:
+        return None, None
+    manager, run_id, member_name = workspace_context
+    result = await manager.acquire_workspace_write_lock(run_id, member_name)
+    if not getattr(result, "ok", False):
+        return None, _agent_group_error_text(result)
+    return result.data, None
 
 
 @builtin_tool(config=_COMPUTER_RUNTIME_TOOL_CONFIG)
@@ -61,18 +119,31 @@ class ExecuteShellTool(FunctionTool):
         try:
             cwd: str | None = None
             if is_local_runtime(context):
-                current_workspace_root = workspace_root(
-                    context.context.event.unified_msg_origin
-                )
-                current_workspace_root.mkdir(parents=True, exist_ok=True)
-                cwd = str(current_workspace_root)
+                group_cwd, group_error = await _agent_group_workspace_cwd(context)
+                if group_error:
+                    return f"Error executing command: {group_error}"
+                if group_cwd is not None:
+                    cwd = group_cwd
+                else:
+                    current_workspace_root = workspace_root(
+                        context.context.event.unified_msg_origin
+                    )
+                    current_workspace_root.mkdir(parents=True, exist_ok=True)
+                    cwd = str(current_workspace_root)
 
-            result = await sb.shell.exec(
-                command,
-                cwd=cwd,
-                background=background,
-                env=env,
-            )
+            write_lease, lock_error = await _acquire_agent_group_write_lease(context)
+            if lock_error:
+                return f"Error executing command: {lock_error}"
+            try:
+                result = await sb.shell.exec(
+                    command,
+                    cwd=cwd,
+                    background=background,
+                    env=env,
+                )
+            finally:
+                if write_lease is not None:
+                    await write_lease.release()
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             return f"Error executing command: {str(e)}"

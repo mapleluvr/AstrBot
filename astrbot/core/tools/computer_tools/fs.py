@@ -35,6 +35,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import FunctionTool, logger
 from astrbot.api.event import MessageChain
@@ -108,6 +109,114 @@ def _is_restricted_env(context: ContextWrapper[AstrAgentContext]) -> bool:
     provider_settings = cfg.get("provider_settings", {})
     require_admin = provider_settings.get("computer_use_require_admin", True)
     return require_admin and context.context.event.role != "admin"
+
+
+def _agent_group_workspace_context(
+    context: ContextWrapper[AstrAgentContext],
+) -> tuple[Any, str, str] | None:
+    event = context.context.event
+    if not hasattr(event, "get_extra"):
+        return None
+    member_context = event.get_extra("agent_group_member_context")
+    helper_context = event.get_extra("agent_group_helper_context")
+    run_id = None
+    member_name = None
+    if isinstance(member_context, dict):
+        run_id = member_context.get("run_id")
+        member_name = member_context.get("member_name")
+    if not run_id and isinstance(helper_context, dict):
+        run_id = helper_context.get("run_id")
+        member_name = helper_context.get("creator_member")
+    if not run_id or not member_name:
+        return None
+    manager = getattr(context.context.context, "agent_group_runtime_manager", None)
+    if manager is None:
+        return None
+    return manager, str(run_id), str(member_name)
+
+
+def _agent_group_error_text(result: Any) -> str:
+    error = getattr(result, "error", None)
+    if error is None:
+        return "agent_group_workspace_error: Agent group workspace operation failed."
+    return f"{error.error_code}: {error.message}"
+
+
+async def _resolve_agent_group_workspace_path(
+    context: ContextWrapper[AstrAgentContext],
+    path: str,
+) -> str | None:
+    workspace_context = _agent_group_workspace_context(context)
+    if workspace_context is None:
+        return None
+    manager, run_id, member_name = workspace_context
+    result = await manager.resolve_workspace_file_path(run_id, member_name, path)
+    if not getattr(result, "ok", False):
+        raise PermissionError(_agent_group_error_text(result))
+    return str(result.data["path"])
+
+
+async def _resolve_rw_path_for_context(
+    context: ContextWrapper[AstrAgentContext],
+    path: str,
+    *,
+    restricted: bool,
+    local_env: bool,
+    umo: str,
+) -> str:
+    if local_env:
+        group_path = await _resolve_agent_group_workspace_path(context, path)
+        if group_path is not None:
+            return group_path
+    return _normalize_rw_path(
+        path,
+        restricted=restricted,
+        local_env=local_env,
+        umo=umo,
+    )
+
+
+async def _record_agent_group_file_read(
+    context: ContextWrapper[AstrAgentContext],
+    path: str,
+) -> str | None:
+    workspace_context = _agent_group_workspace_context(context)
+    if workspace_context is None:
+        return None
+    manager, run_id, member_name = workspace_context
+    result = await manager.record_workspace_file_read(run_id, member_name, path)
+    if not getattr(result, "ok", False):
+        return _agent_group_error_text(result)
+    return None
+
+
+async def _record_agent_group_file_write(
+    context: ContextWrapper[AstrAgentContext],
+    paths: list[str],
+) -> None:
+    workspace_context = _agent_group_workspace_context(context)
+    if workspace_context is None:
+        return
+    manager, run_id, member_name = workspace_context
+    await manager.record_workspace_file_write(run_id, member_name, paths)
+
+
+async def _acquire_agent_group_write_lease(
+    context: ContextWrapper[AstrAgentContext],
+    paths: list[str],
+) -> tuple[Any | None, str | None]:
+    workspace_context = _agent_group_workspace_context(context)
+    if workspace_context is None:
+        return None, None
+    manager, run_id, member_name = workspace_context
+    result = await manager.acquire_workspace_write_lock(
+        run_id,
+        member_name,
+        paths=paths,
+    )
+    if not getattr(result, "ok", False):
+        return None, _agent_group_error_text(result)
+    return result.data, None
 
 
 def _resolve_tool_path(path: str, *, local_env: bool, umo: str) -> str:
@@ -216,23 +325,28 @@ class FileReadTool(FunctionTool):
     ) -> ToolExecResult:
         local_env = is_local_runtime(context)
         restricted = _is_restricted_env(context)
+        umo = context.context.event.unified_msg_origin
         try:
             normalized_path = (
-                _normalize_rw_path(
+                await _resolve_rw_path_for_context(
+                    context,
                     path,
                     restricted=restricted,
                     local_env=local_env,
-                    umo=context.context.event.unified_msg_origin,
+                    umo=umo,
                 )
                 if local_env
                 else path.strip()
             )
             if not normalized_path:
                 raise ValueError("`path` must be a non-empty string.")
+            read_error = await _record_agent_group_file_read(context, normalized_path)
+            if read_error:
+                return f"Error: {read_error}"
             offset, limit = self._validate_read_window(offset, limit)
             sb = await get_booter(
                 context.context.context,
-                context.context.event.unified_msg_origin,
+                umo,
             )
             return await read_file_tool_result(
                 sb,
@@ -283,35 +397,48 @@ class FileWriteTool(FunctionTool):
     ) -> ToolExecResult:
         local_env = is_local_runtime(context)
         restricted = _is_restricted_env(context)
+        umo = context.context.event.unified_msg_origin
         try:
             normalized_path = (
-                _normalize_rw_path(
+                await _resolve_rw_path_for_context(
+                    context,
                     path,
                     restricted=restricted,
                     local_env=local_env,
-                    umo=context.context.event.unified_msg_origin,
+                    umo=umo,
                 )
                 if local_env
                 else path.strip()
             )
             if not normalized_path:
                 raise ValueError("`path` must be a non-empty string.")
+            write_lease, lock_error = await _acquire_agent_group_write_lease(
+                context,
+                [normalized_path],
+            )
+            if lock_error:
+                return f"Error writing file: {lock_error}"
             sb = await get_booter(
                 context.context.context,
-                context.context.event.unified_msg_origin,
+                umo,
             )
-            result = await sb.fs.write_file(
-                path=normalized_path,
-                content=content,
-                mode="w",
-                encoding="utf-8",
-            )
+            try:
+                result = await sb.fs.write_file(
+                    path=normalized_path,
+                    content=content,
+                    mode="w",
+                    encoding="utf-8",
+                )
+            finally:
+                if write_lease is not None:
+                    await write_lease.release()
             if not result.get("success", False):
                 error_detail = str(result.get("error", "") or "").strip()
                 return (
                     "Error writing file: "
                     f"{error_detail or 'unknown filesystem write error'}"
                 )
+            await _record_agent_group_file_write(context, [normalized_path])
             return f"File written successfully: {normalized_path}"
         except PermissionError as exc:
             return f"Error: {exc}"
@@ -363,7 +490,8 @@ class FileEditTool(FunctionTool):
         restricted = _is_restricted_env(context)
         try:
             normalized_path = (
-                _normalize_rw_path(
+                await _resolve_rw_path_for_context(
+                    context,
                     path,
                     restricted=restricted,
                     local_env=local_env,
@@ -376,23 +504,34 @@ class FileEditTool(FunctionTool):
                 raise ValueError("`path` must be a non-empty string.")
             normalized_old = _decode_escaped_text(old)
             normalized_new = _decode_escaped_text(new)
+            write_lease, lock_error = await _acquire_agent_group_write_lease(
+                context,
+                [normalized_path],
+            )
+            if lock_error:
+                return f"Error editing file: {lock_error}"
             sb = await get_booter(
                 context.context.context,
                 context.context.event.unified_msg_origin,
             )
-            result = await sb.fs.edit_file(
-                path=normalized_path,
-                old_string=normalized_old,
-                new_string=normalized_new,
-                replace_all=replace_all,
-                encoding="utf-8",
-            )
+            try:
+                result = await sb.fs.edit_file(
+                    path=normalized_path,
+                    old_string=normalized_old,
+                    new_string=normalized_new,
+                    replace_all=replace_all,
+                    encoding="utf-8",
+                )
+            finally:
+                if write_lease is not None:
+                    await write_lease.release()
             if not result.get("success", False):
                 error_detail = str(result.get("error", "") or "").strip()
                 return (
                     "Error editing file: "
                     f"{error_detail or 'unknown filesystem edit error'}"
                 )
+            await _record_agent_group_file_write(context, [normalized_path])
             replacements = int(result.get("replacements", 0) or 0)
             mode_text = "all matches" if replace_all else "first match"
             return (

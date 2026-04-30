@@ -18,6 +18,7 @@ from asyncio import Queue
 
 from astrbot.api import logger, sp
 from astrbot.core import LogBroker, LogManager
+from astrbot.core.agent_group_runtime import AgentGroupRuntimeManager
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config.default import VERSION
 from astrbot.core.conversation_mgr import ConversationManager
@@ -34,7 +35,10 @@ from astrbot.core.star.context import Context
 from astrbot.core.star.star_handler import EventType, star_handlers_registry, star_map
 from astrbot.core.star.star_manager import PluginManager
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
-from astrbot.core.subagent_runtime import SubAgentRuntimeManager
+from astrbot.core.subagent_runtime import (
+    SubAgentRuntimeManager,
+    normalize_subagent_orchestrator_config,
+)
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.updator import AstrBotUpdator
 from astrbot.core.utils.llm_metadata import update_llm_metadata
@@ -60,6 +64,7 @@ class AstrBotCoreLifecycle:
 
         self.subagent_orchestrator: SubAgentOrchestrator | None = None
         self.subagent_runtime_manager: SubAgentRuntimeManager | None = None
+        self.agent_group_runtime_manager: AgentGroupRuntimeManager | None = None
         self.cron_manager: CronJobManager | None = None
         self.temp_dir_cleaner: TempDirCleaner | None = None
 
@@ -94,9 +99,11 @@ class AstrBotCoreLifecycle:
                     self.provider_manager.llm_tools,
                     self.persona_mgr,
                 )
-            config = self.astrbot_config.get("subagent_orchestrator", {})
-            if not isinstance(config, dict):
-                config = {}
+            raw_config = self.astrbot_config.get("subagent_orchestrator")
+            config = normalize_subagent_orchestrator_config(raw_config)
+            self.astrbot_config["subagent_orchestrator"] = config
+            if config != raw_config:
+                self.astrbot_config.save_config()
             await self.subagent_orchestrator.reload_from_config(config)
         except Exception as e:
             logger.error(f"Subagent orchestrator init failed: {e}", exc_info=True)
@@ -170,9 +177,11 @@ class AstrBotCoreLifecycle:
         # 初始化对话管理器
         self.conversation_manager = ConversationManager(self.db)
 
-        subagent_config = self.astrbot_config.get("subagent_orchestrator", {})
-        if not isinstance(subagent_config, dict):
-            subagent_config = {}
+        raw_subagent_config = self.astrbot_config.get("subagent_orchestrator")
+        subagent_config = normalize_subagent_orchestrator_config(raw_subagent_config)
+        self.astrbot_config["subagent_orchestrator"] = subagent_config
+        if subagent_config != raw_subagent_config:
+            self.astrbot_config.save_config()
         self.subagent_runtime_manager = SubAgentRuntimeManager(
             self.db,
             self.provider_manager.llm_tools,
@@ -197,6 +206,16 @@ class AstrBotCoreLifecycle:
             self.conversation_manager.register_on_conversation_deleted(
                 cleanup_for_conversation
             )
+
+        agent_group_config = self.astrbot_config.get("agent_group", {})
+        if not isinstance(agent_group_config, dict):
+            agent_group_config = {}
+        self.agent_group_runtime_manager = AgentGroupRuntimeManager(
+            self.db,
+            self.subagent_runtime_manager,
+            self.conversation_manager,
+            config=agent_group_config,
+        )
 
         # 初始化平台消息历史管理器
         self.platform_message_history_manager = PlatformMessageHistoryManager(self.db)
@@ -225,6 +244,7 @@ class AstrBotCoreLifecycle:
             self.cron_manager,
             self.subagent_orchestrator,
             self.subagent_runtime_manager,
+            self.agent_group_runtime_manager,
         )
 
         # 初始化插件管理器

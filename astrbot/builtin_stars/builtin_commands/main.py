@@ -3,6 +3,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 
 from .commands import (
     AdminCommands,
+    AgentGroupCommands,
     ConversationCommands,
     HelpCommand,
     ProviderCommands,
@@ -16,6 +17,7 @@ class Main(star.Star):
         self.context = context
 
         self.admin_c = AdminCommands(self.context)
+        self.agent_group_c = AgentGroupCommands(self.context)
         self.conversation_c = ConversationCommands(self.context)
         self.help_c = HelpCommand(self.context)
         self.provider_c = ProviderCommands(self.context)
@@ -46,6 +48,18 @@ class Main(star.Star):
     async def new_conv(self, message: AstrMessageEvent) -> None:
         """Create new conversation"""
         await self.conversation_c.new_conv(message)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("agent_group")
+    async def agent_group(
+        self,
+        event: AstrMessageEvent,
+        action: str | None = None,
+        preset_name: str | None = None,
+        *task_parts: str,
+    ) -> None:
+        """Manage Agent Group runs"""
+        await self.agent_group_c.agent_group(event, action, preset_name, *task_parts)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("provider")

@@ -268,6 +268,113 @@ async def test_subagent_config_preserves_runtime_schema_fields(
         )
 
 
+@pytest.mark.asyncio
+async def test_subagent_config_auto_adds_agent_group_summary_system_prompt_preset(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+):
+    test_client = app.test_client()
+    old_cfg = copy.deepcopy(
+        core_lifecycle_td.astrbot_config.get("subagent_orchestrator", {})
+    )
+    payload = {
+        "main_enable": True,
+        "remove_main_duplicate_tools": False,
+        "agents": [
+            {
+                "name": "planner",
+                "persona_id": "default",
+                "public_description": "planner",
+                "enabled": True,
+            }
+        ],
+    }
+
+    try:
+        post_response = await test_client.post(
+            "/api/subagent/config",
+            json=payload,
+            headers=authenticated_header,
+        )
+        assert post_response.status_code == 200
+
+        get_response = await test_client.get(
+            "/api/subagent/config",
+            headers=authenticated_header,
+        )
+        assert get_response.status_code == 200
+        data = await get_response.get_json()
+        assert data["status"] == "ok"
+
+        summary = next(
+            agent
+            for agent in data["data"]["agents"]
+            if agent.get("name") == "agent_group_summary"
+        )
+        assert summary["runtime_mode"] == "persistent"
+        assert summary["persona_id"] is None
+        assert summary["tools"] == []
+        assert summary["skills"] == []
+        assert "Agent Group" in summary["system_prompt"]
+    finally:
+        await test_client.post(
+            "/api/subagent/config",
+            json=old_cfg,
+            headers=authenticated_header,
+        )
+
+
+@pytest.mark.asyncio
+async def test_subagent_config_get_persists_agent_group_summary_backfill(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+    monkeypatch,
+):
+    test_client = app.test_client()
+    old_cfg = copy.deepcopy(
+        core_lifecycle_td.astrbot_config.get("subagent_orchestrator", {})
+    )
+    save_calls = []
+
+    def fake_save_config(self):
+        _ = self
+        save_calls.append(True)
+
+    monkeypatch.setattr(
+        type(core_lifecycle_td.astrbot_config), "save_config", fake_save_config
+    )
+    core_lifecycle_td.astrbot_config["subagent_orchestrator"] = {
+        "main_enable": True,
+        "remove_main_duplicate_tools": False,
+        "agents": [],
+    }
+
+    try:
+        response = await test_client.get(
+            "/api/subagent/config",
+            headers=authenticated_header,
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data["status"] == "ok"
+        assert any(
+            agent.get("name") == "agent_group_summary"
+            for agent in data["data"]["agents"]
+        )
+        assert any(
+            agent.get("name") == "agent_group_summary"
+            for agent in core_lifecycle_td.astrbot_config["subagent_orchestrator"][
+                "agents"
+            ]
+        )
+        assert save_calls == [True]
+    finally:
+        core_lifecycle_td.astrbot_config["subagent_orchestrator"] = old_cfg
+
+
 def test_subagent_page_serialization_preserves_runtime_schema_fields():
     page = (
         Path(os.getcwd()) / "dashboard" / "src" / "views" / "SubAgentPage.vue"
@@ -275,16 +382,221 @@ def test_subagent_page_serialization_preserves_runtime_schema_fields():
 
     assert "runtime_mode?: string" in page
     assert "skills?: string[] | null" in page
+    assert "system_prompt: string" in page
     assert "runtime_mode: (a?.runtime_mode ?? 'handoff').toString()" in page
     assert "skills: a?.skills === null ? null : Array.isArray(a?.skills)" in page
+    assert "system_prompt: (a?.system_prompt ?? '').toString()" in page
     assert "runtime_mode: agent.runtime_mode ?? 'handoff'" in page
     assert "skills: agent.skills === null ? null : (agent.skills ?? [])" in page
+    assert "system_prompt: agent.system_prompt" in page
+    assert "agent.persona_id || agent.system_prompt.trim()" in page
     assert "...raw" in page
     assert "...a" in page
     assert "const { __key, ...agentConfig } = agent" in page
     assert "runtimeModeOptions" in page
     assert "availableSkillItems" in page
     assert "fetchAvailableSkills" in page
+
+
+@pytest.mark.asyncio
+async def test_agent_group_config_defaults_and_preserves_schema_fields(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+):
+    test_client = app.test_client()
+    old_cfg = copy.deepcopy(core_lifecycle_td.astrbot_config.get("agent_group", {}))
+    payload = {
+        "presets": [
+            {
+                "name": "review_team",
+                "enabled": True,
+                "members": [
+                    {
+                        "name": "planner",
+                        "source_type": "subagent",
+                        "subagent_preset": "planner",
+                        "enabled": True,
+                        "role": "Plan changes",
+                        "tools": ["search"],
+                        "skills": [],
+                    },
+                    {
+                        "name": "reviewer",
+                        "source_type": "persona",
+                        "persona_id": "default",
+                        "enabled": False,
+                    },
+                ],
+                "initial_recipients": ["planner"],
+                "principles": ["Be concise"],
+                "collaboration_prompt": "Work together.",
+                "summary_preset": "agent_group_summary",
+                "summary_include_private": True,
+                "token_limit": 123456,
+                "time_limit_seconds": 600,
+                "workspace_id": "review-workspace",
+                "future_preset_field": {"kept": True},
+            }
+        ],
+        "future_top_level_field": {"enabled": True},
+    }
+
+    try:
+        default_response = await test_client.get(
+            "/api/agent-group/config",
+            headers=authenticated_header,
+        )
+        assert default_response.status_code == 200
+        default_data = await default_response.get_json()
+        assert default_data["status"] == "ok"
+        assert "presets" in default_data["data"]
+        assert default_data["data"]["summary_preset"] == "agent_group_summary"
+
+        response = await test_client.post(
+            "/api/agent-group/config",
+            json=payload,
+            headers=authenticated_header,
+        )
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data["status"] == "ok"
+
+        get_response = await test_client.get(
+            "/api/agent-group/config",
+            headers=authenticated_header,
+        )
+        assert get_response.status_code == 200
+        get_data = await get_response.get_json()
+        assert get_data["status"] == "ok"
+        assert get_data["data"]["summary_preset"] == "agent_group_summary"
+        preset = get_data["data"]["presets"][0]
+        assert preset["name"] == "review_team"
+        assert "workspace_id" not in preset
+        assert preset["members"][0] == {
+            "name": "planner",
+            "source_type": "subagent",
+            "subagent_preset": "planner",
+            "persona_id": "",
+            "enabled": True,
+        }
+        assert "role" not in preset["members"][0]
+        assert "tools" not in preset["members"][0]
+        assert "skills" not in preset["members"][0]
+        assert preset["members"][1] == {
+            "name": "reviewer",
+            "source_type": "persona",
+            "subagent_preset": "",
+            "persona_id": "default",
+            "enabled": False,
+        }
+        assert preset["initial_recipients"] == ["planner"]
+        assert preset["summary_preset"] == "agent_group_summary"
+        assert preset["token_limit"] == 123456
+        assert preset["summary_include_private"] is True
+        assert preset["future_preset_field"] == {"kept": True}
+        assert get_data["data"]["future_top_level_field"] == {"enabled": True}
+    finally:
+        await test_client.post(
+            "/api/agent-group/config",
+            json=old_cfg,
+            headers=authenticated_header,
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_group_config_save_reloads_runtime_manager(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+):
+    test_client = app.test_client()
+    old_cfg = copy.deepcopy(core_lifecycle_td.astrbot_config.get("agent_group", {}))
+    old_runtime_manager = getattr(core_lifecycle_td, "agent_group_runtime_manager", None)
+    payload = {"presets": []}
+    runtime_manager = SimpleNamespace(reload_from_config=AsyncMock())
+    core_lifecycle_td.agent_group_runtime_manager = runtime_manager
+
+    try:
+        response = await test_client.post(
+            "/api/agent-group/config",
+            json=payload,
+            headers=authenticated_header,
+        )
+
+        assert response.status_code == 200
+        data = await response.get_json()
+        assert data["status"] == "ok"
+        runtime_manager.reload_from_config.assert_awaited_once_with(
+            {"presets": [], "summary_preset": "agent_group_summary"}
+        )
+    finally:
+        core_lifecycle_td.agent_group_runtime_manager = old_runtime_manager
+        await test_client.post(
+            "/api/agent-group/config",
+            json=old_cfg,
+            headers=authenticated_header,
+        )
+
+
+def test_agent_group_dashboard_page_is_registered():
+    root = Path(os.getcwd())
+    page = (root / "dashboard" / "src" / "views" / "AgentGroupPage.vue").read_text(
+        encoding="utf-8"
+    )
+    routes = (root / "dashboard" / "src" / "router" / "MainRoutes.ts").read_text(
+        encoding="utf-8"
+    )
+    sidebar = (
+        root
+        / "dashboard"
+        / "src"
+        / "layouts"
+        / "full"
+        / "vertical-sidebar"
+        / "sidebarItem.ts"
+    ).read_text(encoding="utf-8")
+    loader = (root / "dashboard" / "src" / "i18n" / "loader.ts").read_text(
+        encoding="utf-8"
+    )
+    translations = (
+        root / "dashboard" / "src" / "i18n" / "translations.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "features/agent-group" in loader
+    assert "AgentGroupPage.vue" in routes
+    assert "core.navigation.agentGroup" in sidebar
+    assert "'agent-group': zhCNAgentGroup" in translations
+    assert "'agent-group': enUSAgentGroup" in translations
+    assert "'agent-group': ruRUAgentGroup" in translations
+    assert "type AgentGroupPreset" in page
+    assert "source_type" in page
+    assert (
+        "import PersonaSelector from '@/components/shared/PersonaSelector.vue'"
+        in page
+    )
+    assert (
+        "import PersonaQuickPreview from '@/components/shared/PersonaQuickPreview.vue'"
+        in page
+    )
+    assert "PersonaSelector" in page
+    assert "PersonaQuickPreview" in page
+    assert "selectedSubAgentPreset" in page
+    assert "initial_recipients" in page
+    assert "summary_preset" in page
+    assert "summary_include_private" in page
+    assert "principlesNote" in page
+    assert "principlesExample" in page
+    assert "collaborationPromptNote" in page
+    assert "collaborationPromptExample" in page
+    assert "v-tooltip" in page
+    assert "token_limit" in page
+    assert "workspace_id" not in page
+    assert "member.role" not in page
+    assert "member.tools" not in page
+    assert "member.skills" not in page
+    assert "axios.get('/api/agent-group/config')" in page
+    assert "axios.post('/api/agent-group/config', payload)" in page
 
 
 @pytest.mark.asyncio
@@ -319,8 +631,14 @@ async def test_subagent_config_save_reloads_orchestrator_and_runtime_manager(
         assert response.status_code == 200
         data = await response.get_json()
         assert data["status"] == "ok"
-        orchestrator.reload_from_config.assert_awaited_once_with(payload)
-        runtime_manager.reload_from_config.assert_awaited_once_with(payload)
+        orchestrator.reload_from_config.assert_awaited_once()
+        runtime_manager.reload_from_config.assert_awaited_once()
+        reload_config = orchestrator.reload_from_config.await_args.args[0]
+        assert reload_config == runtime_manager.reload_from_config.await_args.args[0]
+        assert any(
+            agent.get("name") == "agent_group_summary"
+            for agent in reload_config["agents"]
+        )
     finally:
         core_lifecycle_td.subagent_orchestrator = old_orchestrator
         core_lifecycle_td.subagent_runtime_manager = old_runtime_manager

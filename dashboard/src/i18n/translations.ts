@@ -37,6 +37,7 @@ import zhCNPersona from './locales/zh-CN/features/persona.json';
 import zhCNMigration from './locales/zh-CN/features/migration.json';
 import zhCNCommand from './locales/zh-CN/features/command.json';
 import zhCNSubagent from './locales/zh-CN/features/subagent.json';
+import zhCNAgentGroup from './locales/zh-CN/features/agent-group.json';
 import zhCNWelcome from './locales/zh-CN/features/welcome.json';
 
 import zhCNErrors from './locales/zh-CN/messages/errors.json';
@@ -79,6 +80,7 @@ import enUSPersona from './locales/en-US/features/persona.json';
 import enUSMigration from './locales/en-US/features/migration.json';
 import enUSCommand from './locales/en-US/features/command.json';
 import enUSSubagent from './locales/en-US/features/subagent.json';
+import enUSAgentGroup from './locales/en-US/features/agent-group.json';
 import enUSWelcome from './locales/en-US/features/welcome.json';
 
 import enUSErrors from './locales/en-US/messages/errors.json';
@@ -121,6 +123,7 @@ import ruRUPersona from './locales/ru-RU/features/persona.json';
 import ruRUMigration from './locales/ru-RU/features/migration.json';
 import ruRUCommand from './locales/ru-RU/features/command.json';
 import ruRUSubagent from './locales/ru-RU/features/subagent.json';
+import ruRUAgentGroup from './locales/ru-RU/features/agent-group.json';
 import ruRUWelcome from './locales/ru-RU/features/welcome.json';
 
 import ruRUErrors from './locales/ru-RU/messages/errors.json';
@@ -171,6 +174,7 @@ export const translations = {
       migration: zhCNMigration,
       command: zhCNCommand,
       subagent: zhCNSubagent,
+      'agent-group': zhCNAgentGroup,
       welcome: zhCNWelcome
     },
     messages: {
@@ -221,6 +225,7 @@ export const translations = {
       migration: enUSMigration,
       command: enUSCommand,
       subagent: enUSSubagent,
+      'agent-group': enUSAgentGroup,
       welcome: enUSWelcome
     },
     messages: {
@@ -271,6 +276,7 @@ export const translations = {
       migration: ruRUMigration,
       command: ruRUCommand,
       subagent: ruRUSubagent,
+      'agent-group': ruRUAgentGroup,
       welcome: ruRUWelcome
     },
     messages: {

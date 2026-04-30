@@ -24,6 +24,7 @@ from astrbot.core.utils.datetime_utils import to_utc_isoformat
 from astrbot.core.utils.io import get_local_ip_addresses
 
 from .routes import *
+from .routes.agent_group import AgentGroupRoute
 from .routes.api_key import ALL_OPEN_API_SCOPES
 from .routes.backup import BackupRoute
 from .routes.live_chat import LiveChatRoute
@@ -124,6 +125,7 @@ class AstrBotDashboard:
         self.chatui_project_route = ChatUIProjectRoute(self.context, db)
         self.tools_root = ToolsRoute(self.context, core_lifecycle)
         self.subagent_route = SubAgentRoute(self.context, core_lifecycle)
+        self.agent_group_route = AgentGroupRoute(self.context, core_lifecycle)
         self.skills_route = SkillsRoute(self.context, core_lifecycle)
         self.conversation_route = ConversationRoute(self.context, db, core_lifecycle)
         self.file_route = FileRoute(self.context)

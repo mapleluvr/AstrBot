@@ -41,6 +41,7 @@ from astrbot.core.provider.register import llm_tools
 from astrbot.core.skills.skill_manager import SkillManager, build_skills_prompt
 from astrbot.core.star.context import Context
 from astrbot.core.star.star_handler import star_map
+from astrbot.core.tools.agent_group_tools import AGENT_GROUP_LOCAL_AGENT_TOOLS
 from astrbot.core.tools.computer_tools import (
     AnnotateExecutionTool,
     BrowserBatchExecTool,
@@ -213,6 +214,10 @@ def _subagent_runtime_enabled(orch_cfg: dict) -> bool:
     if isinstance(runtime_cfg, dict) and "enable" in runtime_cfg:
         return bool(runtime_cfg.get("enable"))
     return bool(orch_cfg.get("runtime_enable", False))
+
+
+def _agent_group_runtime_available(plugin_context: Context) -> bool:
+    return getattr(plugin_context, "agent_group_runtime_manager", None) is not None
 
 
 async def _get_session_conv(
@@ -538,6 +543,12 @@ async def _ensure_persona_and_skills(
         ).strip()
         if router_prompt:
             req.system_prompt += f"\n{router_prompt}\n"
+
+    if _agent_group_runtime_available(plugin_context):
+        if req.func_tool is None:
+            req.func_tool = ToolSet()
+        for tool_cls in AGENT_GROUP_LOCAL_AGENT_TOOLS:
+            req.func_tool.add_tool(tmgr.get_builtin_tool(tool_cls))
     try:
         event.trace.record(
             "sel_persona",

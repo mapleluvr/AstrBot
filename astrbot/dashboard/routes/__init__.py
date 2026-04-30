@@ -1,3 +1,4 @@
+from .agent_group import AgentGroupRoute
 from .api_key import ApiKeyRoute
 from .auth import AuthRoute
 from .backup import BackupRoute
@@ -24,6 +25,7 @@ from .update import UpdateRoute
 
 __all__ = [
     "ApiKeyRoute",
+    "AgentGroupRoute",
     "AuthRoute",
     "BackupRoute",
     "ChatRoute",

@@ -1,0 +1,88 @@
+{
+  "header": {
+    "eyebrow": "Совместная работа"
+  },
+  "page": {
+    "title": "Группы агентов",
+    "subtitle": "Создавайте переиспользуемые команды из persistent SubAgent presets для совместных запусков."
+  },
+  "actions": {
+    "refresh": "Обновить",
+    "save": "Сохранить",
+    "addPreset": "Добавить preset",
+    "addMember": "Добавить участника",
+    "duplicate": "Дублировать",
+    "delete": "Удалить",
+    "close": "Закрыть"
+  },
+  "section": {
+    "presets": "Presets",
+    "presetSettings": "Настройки preset",
+    "members": "Участники",
+    "collaboration": "Совместная работа",
+    "limits": "Лимиты"
+  },
+  "form": {
+    "presetName": "Имя preset",
+    "enabled": "Включено",
+    "initialRecipients": "Начальные получатели",
+    "initialRecipientsHint": "Участники, получающие первое сообщение задачи.",
+    "collaborationPrompt": "Prompt для совместной работы",
+    "principles": "Принципы",
+    "principlesNote": "Краткие рабочие правила, которые видит каждый участник группы.",
+    "principlesExample": "Пример: Принципы = [\"Указывать допущения\", \"Отмечать разногласия\", \"Давать конкретные ссылки на файлы\"]. Каждый участник видит эти правила перед ответом.",
+    "collaborationPromptNote": "Добавляется в prompt запуска группы и задает способ координации участников.",
+    "collaborationPromptExample": "Пример: \"Planner предлагает порядок реализации, Reviewer проверяет риски, а каждое финальное мнение перечисляет нерешенные блокеры.\" Этот текст добавляется в prompt всего запуска.",
+    "summaryPreset": "Summary SubAgent preset",
+    "summaryIncludePrivate": "Включать приватные транскрипты участников в summary",
+    "tokenLimit": "Лимит токенов",
+    "timeLimitSeconds": "Лимит времени (секунды)",
+    "memberName": "Имя участника",
+    "memberSource": "Member source",
+    "memberSourceSubAgent": "SubAgent",
+    "memberSourcePersona": "Persona",
+    "memberSubAgentPreset": "SubAgent preset"
+  },
+  "cards": {
+    "unnamed": "Группа без имени",
+    "enabled": "Включено",
+    "disabled": "Отключено",
+    "memberCount": "{count} участников"
+  },
+  "empty": {
+    "title": "Нет presets групп агентов",
+    "subtitle": "Добавьте preset, чтобы определить команду.",
+    "action": "Создать preset"
+  },
+  "messages": {
+    "loadConfigFailed": "Не удалось загрузить конфигурацию групп агентов",
+    "loadSubagentsFailed": "Не удалось загрузить SubAgent presets",
+    "saveSuccess": "Успешно сохранено",
+    "saveFailed": "Ошибка сохранения",
+    "unsavedChangesNotice": "На странице есть несохраненные изменения. Сохраните их перед уходом.",
+    "unsavedChangesLeaveConfirm": "Есть несохраненные изменения. При уходе они будут потеряны. Продолжить?",
+    "unsavedChangesReloadConfirm": "Есть несохраненные изменения. Обновление их сбросит. Продолжить?",
+    "presetNameMissing": "У одного preset группы агентов отсутствует имя",
+    "presetNameInvalid": "Недопустимое имя preset: используйте строчные латинские буквы, цифры и подчеркивания, начиная с буквы",
+    "presetNameDuplicate": "Дублирующееся имя preset: {name}",
+    "memberNameMissing": "В {preset} есть участник без имени",
+    "memberNameInvalid": "Недопустимое имя участника в {preset}",
+    "memberNameDuplicate": "Дублирующееся имя участника в {preset}: {name}",
+    "memberPresetMissing": "Участник {member} в {preset} не имеет выбранного SubAgent preset",
+    "initialRecipientInvalid": "Начальный получатель {name} в {preset} не является включенным участником",
+    "nameRequired": "Имя обязательно",
+    "namePattern": "Только строчные буквы, цифры и подчеркивание",
+    "memberPersonaMissing": "Member {member} in {preset} has no Persona selected"
+  },
+  "preview": {
+    "persona": "Persona",
+    "provider": "Provider",
+    "tools": "Tools",
+    "skills": "Skills",
+    "systemPrompt": "System prompt",
+    "defaultProvider": "Default",
+    "all": "All",
+    "none": "None",
+    "subAgentMissing": "No SubAgent preset selected"
+  }
+}

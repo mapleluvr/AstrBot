@@ -1,6 +1,7 @@
 # Commands module
 
 from .admin import AdminCommands
+from .agent_group import AgentGroupCommands
 from .conversation import ConversationCommands
 from .help import HelpCommand
 from .provider import ProviderCommands
@@ -8,6 +9,7 @@ from .setunset import SetUnsetCommands
 from .sid import SIDCommand
 
 __all__ = [
+    "AgentGroupCommands",
     "AdminCommands",
     "ConversationCommands",
     "HelpCommand",

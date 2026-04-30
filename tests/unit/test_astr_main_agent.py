@@ -15,6 +15,7 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider import Provider
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.skills.skill_manager import SkillInfo
+from astrbot.core.tools.agent_group_tools import AGENT_GROUP_LOCAL_AGENT_TOOLS
 from astrbot.core.tools.skill_tool import SkillTool
 from astrbot.core.tools.subagent_runtime_tools import SUBAGENT_RUNTIME_MANAGEMENT_TOOLS
 
@@ -47,6 +48,7 @@ def mock_context():
     tool_mgr.get_builtin_tool.side_effect = lambda cls, **kwargs: cls(**kwargs)
     ctx.get_llm_tool_manager.return_value = tool_mgr
     ctx.subagent_orchestrator = None
+    ctx.agent_group_runtime_manager = None
     return ctx
 
 
@@ -838,6 +840,58 @@ class TestEnsurePersonaAndSkills:
         ]
         for name in expected_names:
             assert name not in names
+
+    @pytest.mark.asyncio
+    async def test_agent_group_presets_inject_local_agent_tools_without_handoffs(
+        self, mock_event, mock_context
+    ):
+        """Agent group presets inject Local Agent tools without handoff mode."""
+        module = ama
+        tmgr = mock_context.get_llm_tool_manager.return_value
+        tmgr.get_full_tool_set.return_value = ToolSet()
+        tmgr.func_list = []
+
+        mock_context.agent_group_runtime_manager = MagicMock()
+        mock_context.agent_group_runtime_manager.list_presets.return_value = [object()]
+        mock_context.subagent_orchestrator = None
+        mock_context.get_config.return_value = {}
+
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id=None)
+
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        names = req.func_tool.names()
+        expected_names = [tool_cls().name for tool_cls in AGENT_GROUP_LOCAL_AGENT_TOOLS]
+        for name in expected_names:
+            assert names.count(name) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_group_config_tools_inject_without_existing_presets(
+        self, mock_event, mock_context
+    ):
+        """Local Agent can create the first Agent Group preset through config tools."""
+        module = ama
+        tmgr = mock_context.get_llm_tool_manager.return_value
+        tmgr.get_full_tool_set.return_value = ToolSet()
+        tmgr.func_list = []
+
+        mock_context.agent_group_runtime_manager = MagicMock()
+        mock_context.agent_group_runtime_manager.list_presets.return_value = []
+        mock_context.subagent_orchestrator = None
+        mock_context.get_config.return_value = {}
+
+        req = ProviderRequest()
+        req.conversation = MagicMock(persona_id=None)
+
+        await module._ensure_persona_and_skills(req, {}, mock_context, mock_event)
+
+        assert req.func_tool is not None
+        names = req.func_tool.names()
+        assert "draft_agent_preset_config_patch" in names
+        assert "apply_agent_preset_config_patch" in names
 
     @pytest.mark.asyncio
     async def test_handoff_subagent_presets_still_inject_handoff_tools(

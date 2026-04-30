@@ -105,6 +105,42 @@ class SubAgentInstance(TimestampMixin, SQLModel, table=True):
     )
 
 
+class AgentGroupRun(TimestampMixin, SQLModel, table=True):
+    __tablename__: str = "agent_group_runs"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    run_id: str = Field(
+        max_length=64,
+        nullable=False,
+        unique=True,
+        default_factory=lambda: str(uuid.uuid4()),
+    )
+    umo: str = Field(nullable=False, index=True)
+    conversation_id: str | None = Field(default=None, index=True)
+    workspace_id: str = Field(max_length=128, nullable=False, index=True)
+    preset_name: str = Field(max_length=128, nullable=False, index=True)
+    task: str = Field(nullable=False, sa_type=Text)
+    status: str = Field(max_length=32, nullable=False, index=True)
+    members: list = Field(default_factory=list, sa_type=JSON)
+    messages: list = Field(default_factory=list, sa_type=JSON)
+    final_opinions: dict = Field(default_factory=dict, sa_type=JSON)
+    summary: str | None = Field(default=None, sa_type=Text)
+    token_usage: dict = Field(default_factory=dict, sa_type=JSON)
+    metadata_json: dict = Field(default_factory=dict, sa_type=JSON)
+    version: int = Field(default=1, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            name="uix_agent_group_run_id",
+        ),
+    )
+
+
 class ConversationV2(TimestampMixin, SQLModel, table=True):
     __tablename__: str = "conversations"
 

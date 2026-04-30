@@ -195,13 +195,32 @@ DEFAULT_CONFIG = {
             "and delegate work to the most suitable subagent using transfer_to_* tools. "
             "Do not try to use domain tools yourself. If no subagent fits, respond directly."
         ),
-        "agents": [],
+        "agents": [
+            {
+                "name": "agent_group_summary",
+                "enabled": True,
+                "runtime_mode": "persistent",
+                "public_description": "Summarizes completed Agent Group runs.",
+                "system_prompt": (
+                    "You summarize completed Agent Group runs for the Local Agent. "
+                    "Use only the provided transcript and final opinions. "
+                    "Return a concise final answer with decisions, disagreements, "
+                    "risks, and next steps."
+                ),
+                "tools": [],
+                "skills": [],
+            }
+        ],
         "runtime": {
             "enable": False,
             "max_instances_per_scope": 8,
             "max_persisted_turns": 20,
             "max_persisted_tokens": None,
         },
+    },
+    "agent_group": {
+        "summary_preset": "agent_group_summary",
+        "presets": [],
     },
     "provider_stt_settings": {
         "enable": False,

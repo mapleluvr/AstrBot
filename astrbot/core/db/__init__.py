@@ -8,6 +8,7 @@ from deprecated import deprecated
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from astrbot.core.db.po import (
+    AgentGroupRun,
     ApiKey,
     Attachment,
     ChatUIProject,
@@ -214,6 +215,67 @@ class BaseDatabase(abc.ABC):
     @abc.abstractmethod
     async def delete_subagent_instances_for_session(self, umo: str) -> None:
         """Delete sub-agent instances for a session UMO."""
+        ...
+
+    @abc.abstractmethod
+    async def create_agent_group_run(
+        self,
+        *,
+        umo: str,
+        conversation_id: str | None,
+        workspace_id: str,
+        preset_name: str,
+        task: str,
+        status: str,
+        members: list,
+        messages: list,
+        final_opinions: dict,
+        summary: str | None,
+        token_usage: dict,
+        metadata: dict,
+    ) -> AgentGroupRun:
+        """Create an agent group run."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_group_run(self, run_id: str) -> AgentGroupRun | None:
+        """Get an agent group run by public run_id."""
+        ...
+
+    @abc.abstractmethod
+    async def get_active_agent_group_run_for_workspace(
+        self,
+        workspace_id: str,
+    ) -> AgentGroupRun | None:
+        """Get the active or waiting agent group run for a workspace."""
+        ...
+
+    @abc.abstractmethod
+    async def list_agent_group_runs(
+        self,
+        *,
+        umo: str | None = None,
+        workspace_id: str | None = None,
+        status: str | None = None,
+    ) -> list[AgentGroupRun]:
+        """List agent group runs with optional filters."""
+        ...
+
+    @abc.abstractmethod
+    async def save_agent_group_state(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        members: list,
+        messages: list,
+        final_opinions: dict,
+        summary: str | None,
+        token_usage: dict,
+        metadata: dict,
+        expected_version: int,
+    ) -> AgentGroupRun | None:
+        """Save agent group run state with optimistic version checking."""
         ...
 
     @abc.abstractmethod
