@@ -1532,6 +1532,19 @@ class ConfigRoute(Route):
                     "t2i_active_template"
                 ]
 
+            ps = post_configs.setdefault("provider_settings", {})
+            if "checkpoint_async" not in ps:
+                ps["checkpoint_async"] = {}
+            ps["checkpoint_async"].setdefault("enable", False)
+            ps["checkpoint_async"].setdefault("provider_id", "")
+            ps["checkpoint_async"].setdefault("default_for_local_agent", False)
+            ps["checkpoint_async"].setdefault("default_for_subagents", False)
+            ps["checkpoint_async"].setdefault("default_for_agent_group_members", False)
+            ps["checkpoint_async"].setdefault("keep_recent", 8)
+            ps["checkpoint_async"].setdefault("max_chunk_tokens", 6000)
+            ps["checkpoint_async"].setdefault("update_interval_turns", 8)
+            ps["checkpoint_async"].setdefault("update_interval_tokens", 12000)
+
             save_config(post_configs, astrbot_config, is_core=True)
         except Exception as e:
             raise e
