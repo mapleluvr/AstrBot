@@ -223,6 +223,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         # customize
         custom_token_counter: TokenCounter | None = None,
         custom_compressor: ContextCompressor | None = None,
+        context_limit_reached_strategy: str = "truncate_by_turns",
+        checkpoint_async_enabled: bool = False,
+        checkpoint_async_provider: Provider | None = None,
+        checkpoint_keep_recent: int = 8,
+        checkpoint_update_interval_turns: int = 8,
+        checkpoint_update_interval_tokens: int = 12000,
         tool_schema_mode: str | None = "full",
         fallback_providers: list[Provider] | None = None,
         tool_result_overflow_dir: str | None = None,
@@ -238,6 +244,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.truncate_turns = truncate_turns
         self.custom_token_counter = custom_token_counter
         self.custom_compressor = custom_compressor
+        self.context_limit_reached_strategy = context_limit_reached_strategy
+        self.checkpoint_async_enabled = checkpoint_async_enabled
+        self.checkpoint_async_provider = checkpoint_async_provider
+        self.checkpoint_keep_recent = checkpoint_keep_recent
+        self.checkpoint_update_interval_turns = checkpoint_update_interval_turns
+        self.checkpoint_update_interval_tokens = checkpoint_update_interval_tokens
         self.tool_result_overflow_dir = tool_result_overflow_dir
         self.read_tool = read_tool
         self._tool_result_token_counter = EstimateTokenCounter()
@@ -255,6 +267,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             llm_compress_provider=self.llm_compress_provider,
             custom_token_counter=self.custom_token_counter,
             custom_compressor=self.custom_compressor,
+            context_limit_reached_strategy=self.context_limit_reached_strategy,
+            checkpoint_async_enabled=self.checkpoint_async_enabled,
+            checkpoint_async_provider=self.checkpoint_async_provider,
+            checkpoint_keep_recent=self.checkpoint_keep_recent,
+            checkpoint_update_interval_turns=self.checkpoint_update_interval_turns,
+            checkpoint_update_interval_tokens=self.checkpoint_update_interval_tokens,
         )
         self.context_manager = ContextManager(self.context_config)
 

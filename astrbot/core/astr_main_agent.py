@@ -167,6 +167,14 @@ class MainAgentBuildConfig:
     max_quoted_fallback_images: int = 20
     """Maximum number of images injected from quoted-message fallback extraction."""
 
+    # checkpoint settings
+    checkpoint_async_enabled: bool = False
+    checkpoint_async_provider_id: str = ""
+    checkpoint_keep_recent: int = 8
+    checkpoint_max_chunk_tokens: int = 6000
+    checkpoint_update_interval_turns: int = 8
+    checkpoint_update_interval_tokens: int = 12000
+
 
 @dataclass(slots=True)
 class MainAgentBuildResult:
@@ -1099,27 +1107,52 @@ async def _apply_web_search_tools(
         req.func_tool.add_tool(tool_mgr.get_builtin_tool(BaiduWebSearchTool))
 
 
+def _resolve_compression_provider(
+    config: MainAgentBuildConfig, plugin_context: Context
+) -> tuple[Provider | None, Provider | None]:
+    """Resolve the compression provider based on strategy.
+
+    Returns (compress_provider, checkpoint_provider).
+    """
+    strategy = config.context_limit_reached_strategy
+
+    # checkpoint provider
+    checkpoint_provider = None
+    if strategy == "checkpoint_compress":
+        cp_id = config.checkpoint_async_provider_id
+        if not cp_id:
+            cp_id = config.llm_compress_provider_id
+        if cp_id:
+            checkpoint_provider = plugin_context.get_provider_by_id(cp_id)
+            if checkpoint_provider and not isinstance(checkpoint_provider, Provider):
+                logger.warning(
+                    "Checkpoint provider %s is not a chat Provider, disabling checkpoint.",
+                    cp_id,
+                )
+                checkpoint_provider = None
+
+    # llm_compress provider (legacy)
+    compress_provider = None
+    if strategy == "llm_compress" and config.llm_compress_provider_id:
+        compress_provider = plugin_context.get_provider_by_id(
+            config.llm_compress_provider_id
+        )
+        if compress_provider and not isinstance(compress_provider, Provider):
+            logger.warning(
+                "Compression provider %s is not a chat Provider.",
+                config.llm_compress_provider_id,
+            )
+            compress_provider = None
+
+    return compress_provider, checkpoint_provider
+
+
 def _get_compress_provider(
     config: MainAgentBuildConfig, plugin_context: Context
 ) -> Provider | None:
-    if not config.llm_compress_provider_id:
-        return None
-    if config.context_limit_reached_strategy != "llm_compress":
-        return None
-    provider = plugin_context.get_provider_by_id(config.llm_compress_provider_id)
-    if provider is None:
-        logger.warning(
-            "未找到指定的上下文压缩模型 %s，将跳过压缩。",
-            config.llm_compress_provider_id,
-        )
-        return None
-    if not isinstance(provider, Provider):
-        logger.warning(
-            "指定的上下文压缩模型 %s 不是对话模型，将跳过压缩。",
-            config.llm_compress_provider_id,
-        )
-        return None
-    return provider
+    """Legacy: returns llm_compress provider for existing call sites."""
+    cp, _ = _resolve_compression_provider(config, plugin_context)
+    return cp
 
 
 def _get_fallback_chat_providers(
@@ -1413,6 +1446,31 @@ async def build_main_agent(
     if action_type == "live":
         req.system_prompt += f"\n{LIVE_MODE_SYSTEM_PROMPT}\n"
 
+    checkpoint_async = config.provider_settings.get("checkpoint_async", {}) or {}
+    config.checkpoint_async_enabled = checkpoint_async.get("enable", False)
+    config.checkpoint_async_provider_id = checkpoint_async.get("provider_id", "")
+    config.checkpoint_keep_recent = checkpoint_async.get("keep_recent", 8)
+    config.checkpoint_max_chunk_tokens = checkpoint_async.get("max_chunk_tokens", 6000)
+    config.checkpoint_update_interval_turns = checkpoint_async.get(
+        "update_interval_turns", 8
+    )
+    config.checkpoint_update_interval_tokens = checkpoint_async.get(
+        "update_interval_tokens", 12000
+    )
+
+    # Force strategy to checkpoint_compress when default_for_local_agent is True
+    if (
+        config.checkpoint_async_enabled
+        and checkpoint_async.get("default_for_local_agent", False)
+    ):
+        config.context_limit_reached_strategy = "checkpoint_compress"
+
+    compress_provider, checkpoint_provider = _resolve_compression_provider(
+        config, plugin_context
+    )
+    if checkpoint_provider is None and config.context_limit_reached_strategy == "checkpoint_compress":
+        checkpoint_provider = provider  # fall back to main provider
+
     reset_coro = agent_runner.reset(
         provider=provider,
         request=req,
@@ -1425,9 +1483,15 @@ async def build_main_agent(
         streaming=config.streaming_response,
         llm_compress_instruction=config.llm_compress_instruction,
         llm_compress_keep_recent=config.llm_compress_keep_recent,
-        llm_compress_provider=_get_compress_provider(config, plugin_context),
+        llm_compress_provider=compress_provider,
         truncate_turns=config.dequeue_context_length,
         enforce_max_turns=config.max_context_length,
+        context_limit_reached_strategy=config.context_limit_reached_strategy,
+        checkpoint_async_enabled=config.checkpoint_async_enabled,
+        checkpoint_async_provider=checkpoint_provider,
+        checkpoint_keep_recent=config.checkpoint_keep_recent,
+        checkpoint_update_interval_turns=config.checkpoint_update_interval_turns,
+        checkpoint_update_interval_tokens=config.checkpoint_update_interval_tokens,
         tool_schema_mode=config.tool_schema_mode,
         fallback_providers=_get_fallback_chat_providers(
             provider, plugin_context, config.provider_settings
