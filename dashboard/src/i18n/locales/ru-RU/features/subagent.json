@@ -70,7 +70,16 @@
         },
         "skillsLabel": "Навыки",
         "skillsHint": "Выберите навыки для агента. Оставьте пустым для наследования навыков персоны.",
-        "systemPromptLabel": "System prompt"
+        "systemPromptLabel": "System prompt",
+        "checkpointLabel": "Checkpoint",
+        "checkpointHint": "Overrides the global checkpoint default for this SubAgent.",
+        "checkpointProviderLabel": "Checkpoint Provider ID",
+        "checkpointProviderPlaceholder": "Inherit (empty = use global)",
+        "checkpoint": {
+            "inherit": "Inherit Default",
+            "enabled": "Enabled",
+            "disabled": "Disabled"
+        }
     },
     "messages": {
         "loadConfigFailed": "Не удалось загрузить конфигурацию",

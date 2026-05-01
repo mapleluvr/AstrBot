@@ -223,6 +223,27 @@
                     persistent-hint
                     hide-details="auto"
                   />
+
+                  <div v-if="agent.runtime_mode === 'persistent'" class="checkpoint-group">
+                    <label class="checkpoint-label">{{ tm('form.checkpointLabel') }}</label>
+                    <select v-model="agent.checkpoint_async_enabled" class="checkpoint-select">
+                      <option :value="null">{{ tm('form.checkpoint.inherit') }}</option>
+                      <option :value="true">{{ tm('form.checkpoint.enabled') }}</option>
+                      <option :value="false">{{ tm('form.checkpoint.disabled') }}</option>
+                    </select>
+                    <span class="checkpoint-hint">{{ tm('form.checkpointHint') }}</span>
+
+                    <div v-if="agent.checkpoint_async_enabled !== false" class="checkpoint-provider-group">
+                      <label class="checkpoint-label">{{ tm('form.checkpointProviderLabel') }}</label>
+                      <v-text-field
+                        v-model="agent.checkpoint_async_provider_id"
+                        :placeholder="tm('form.checkpointProviderPlaceholder')"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details="auto"
+                      />
+                    </div>
+                  </div>
                 </div>
               </section>
 
@@ -270,6 +291,8 @@ type SubAgentItem = {
   provider_id?: string
   runtime_mode?: string
   skills?: string[] | null
+  checkpoint_async_enabled?: boolean | null
+  checkpoint_async_provider_id?: string | null
 }
 
 type SubAgentConfig = {
@@ -352,7 +375,9 @@ function normalizeConfig(raw: any): SubAgentConfig {
     enabled: a?.enabled !== false,
     provider_id: (a?.provider_id ?? undefined) as string | undefined,
     runtime_mode: (a?.runtime_mode ?? 'handoff').toString(),
-    skills: a?.skills === null ? null : Array.isArray(a?.skills) ? a.skills.map((skill: any) => skill.toString()) : []
+    skills: a?.skills === null ? null : Array.isArray(a?.skills) ? a.skills.map((skill: any) => skill.toString()) : [],
+    checkpoint_async_enabled: a?.checkpoint_async_enabled ?? null,
+    checkpoint_async_provider_id: a?.checkpoint_async_provider_id ?? null
   }))
 
   return { ...raw, main_enable, remove_main_duplicate_tools, agents }
@@ -375,7 +400,9 @@ function toSerializableConfig(config: SubAgentConfig) {
         enabled: agent.enabled,
         provider_id: agent.provider_id ?? null,
         runtime_mode: agent.runtime_mode ?? 'handoff',
-        skills: agent.skills === null ? null : (agent.skills ?? [])
+        skills: agent.skills === null ? null : (agent.skills ?? []),
+        checkpoint_async_enabled: agent.checkpoint_async_enabled ?? null,
+        checkpoint_async_provider_id: agent.checkpoint_async_provider_id ?? null
       }
     })
   }
@@ -415,7 +442,9 @@ function addAgent() {
     enabled: true,
     provider_id: undefined,
     runtime_mode: 'handoff',
-    skills: []
+    skills: [],
+    checkpoint_async_enabled: null,
+    checkpoint_async_provider_id: null
   })
   expandedAgents.value[key] = false
 }
@@ -694,6 +723,46 @@ onBeforeRouteLeave(async () => {
   .agent-edit-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.checkpoint-group {
+  margin-top: 4px;
+}
+
+.checkpoint-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--dashboard-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.checkpoint-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dashboard-text);
+  font-size: 14px;
+  outline: none;
+  cursor: pointer;
+}
+
+.checkpoint-select:focus {
+  border-color: rgb(var(--v-theme-primary));
+}
+
+.checkpoint-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--dashboard-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.checkpoint-provider-group {
+  margin-top: 14px;
 }
 
 @media (max-width: 900px) {

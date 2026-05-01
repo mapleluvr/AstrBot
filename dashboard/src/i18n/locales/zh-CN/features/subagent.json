@@ -71,7 +71,16 @@
     },
     "skillsLabel": "技能",
     "skillsHint": "选择此代理使用的技能。留空则继承人格设定中的所有技能。",
-    "systemPromptLabel": "System prompt"
+    "systemPromptLabel": "System prompt",
+    "checkpointLabel": "Checkpoint",
+    "checkpointHint": "覆盖此子代理的全局 Checkpoint 默认设置。",
+    "checkpointProviderLabel": "Checkpoint Provider ID",
+    "checkpointProviderPlaceholder": "继承（留空 = 使用全局默认）",
+    "checkpoint": {
+      "inherit": "继承默认",
+      "enabled": "启用",
+      "disabled": "禁用"
+    }
   },
   "messages": {
     "loadConfigFailed": "获取配置失败",

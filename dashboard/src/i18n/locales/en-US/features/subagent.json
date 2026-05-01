@@ -70,7 +70,16 @@
     },
     "skillsLabel": "Skills",
     "skillsHint": "Select skills for this agent. Leave empty to inherit persona skills.",
-    "systemPromptLabel": "System prompt"
+    "systemPromptLabel": "System prompt",
+    "checkpointLabel": "Checkpoint",
+    "checkpointHint": "Overrides the global checkpoint default for this SubAgent.",
+    "checkpointProviderLabel": "Checkpoint Provider ID",
+    "checkpointProviderPlaceholder": "Inherit (empty = use global)",
+    "checkpoint": {
+      "inherit": "Inherit Default",
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    }
   },
   "messages": {
     "loadConfigFailed": "Failed to load config",
