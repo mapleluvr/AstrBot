@@ -233,9 +233,10 @@
           "description": "Handling When Model Context Window is Exceeded",
           "labels": [
             "Truncate by Turns",
-            "Compress by LLM"
+            "Compress by LLM",
+            "Checkpoint Compress"
           ],
-          "hint": "When 'Truncate by Turns' is selected, the oldest N conversation turns will be discarded based on the 'Dequeue Conversation Turns' setting above. When 'Compress by LLM' is selected, the specified model will be used for context compression."
+          "hint": "When 'Truncate by Turns' is selected, the oldest N conversation turns will be discarded based on the 'Dequeue Conversation Turns' setting above. When 'Compress by LLM' is selected, the specified model will be used for context compression. When 'Checkpoint Compress' is selected, an async checkpoint agent will maintain structured state for long-context recovery."
         },
         "llm_compress_instruction": {
           "description": "Context Compression Instruction",
