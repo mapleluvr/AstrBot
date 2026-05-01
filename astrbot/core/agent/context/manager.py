@@ -1,7 +1,7 @@
 from astrbot import logger
 
 from ..message import Message
-from .compressor import LLMSummaryCompressor, TruncateByTurnsCompressor
+from .compressor import CheckpointCompressor, LLMSummaryCompressor, TruncateByTurnsCompressor
 from .config import ContextConfig
 from .token_counter import EstimateTokenCounter
 from .truncator import ContextTruncator
@@ -28,8 +28,25 @@ class ContextManager:
         self.token_counter = config.custom_token_counter or EstimateTokenCounter()
         self.truncator = ContextTruncator()
 
+        strategy = getattr(config, "context_limit_reached_strategy", "truncate_by_turns")
+
         if config.custom_compressor:
             self.compressor = config.custom_compressor
+        elif strategy == "checkpoint_compress":
+            checkpoint_provider = getattr(config, "checkpoint_async_provider", None)
+            if checkpoint_provider:
+                self.compressor = CheckpointCompressor(
+                    provider=checkpoint_provider,
+                    keep_recent=config.checkpoint_keep_recent,
+                )
+            else:
+                logger.warning(
+                    "checkpoint_compress strategy selected but no checkpoint provider configured. "
+                    "Falling back to truncate_by_turns."
+                )
+                self.compressor = TruncateByTurnsCompressor(
+                    truncate_turns=config.truncate_turns
+                )
         elif config.llm_compress_provider:
             self.compressor = LLMSummaryCompressor(
                 provider=config.llm_compress_provider,
