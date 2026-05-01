@@ -26,6 +26,7 @@ from tenacity import (
 )
 
 from astrbot import logger
+from astrbot.core.agent.checkpoint.scheduler import CheckpointScheduler
 from astrbot.core.agent.message import ImageURLPart, TextPart, ThinkPart
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.tool_image_cache import tool_image_cache
@@ -275,6 +276,16 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             checkpoint_update_interval_tokens=self.checkpoint_update_interval_tokens,
         )
         self.context_manager = ContextManager(self.context_config)
+
+        if self.checkpoint_async_enabled and self.checkpoint_async_provider:
+            self._checkpoint_scheduler = CheckpointScheduler(
+                store=None,  # will be set when store is available
+                default_provider=self.checkpoint_async_provider,
+                interval_turns=self.checkpoint_update_interval_turns,
+                interval_tokens=self.checkpoint_update_interval_tokens,
+            )
+        else:
+            self._checkpoint_scheduler = None
 
         self.provider = provider
         self.fallback_providers: list[Provider] = []
@@ -883,6 +894,23 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
 
                     await self._complete_with_assistant_response(llm_resp)
+                    if self._checkpoint_scheduler is not None:
+                        session_id = getattr(self, "_session_id", "default")
+                        self._checkpoint_scheduler.record_step(
+                            owner_type="conversation",
+                            owner_id=session_id,
+                            tokens=0,
+                        )
+                        if self._checkpoint_scheduler.should_update(
+                            "conversation", session_id
+                        ):
+                            asyncio.create_task(
+                                self._checkpoint_scheduler.schedule_update(
+                                    owner_type="conversation",
+                                    owner_id=session_id,
+                                    messages=list(self.run_context.messages),
+                                )
+                            )
                     return
 
             tool_call_result_blocks = []
@@ -974,6 +1002,24 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
 
             self.req.append_tool_calls_result(tool_calls_result)
+
+        if self._checkpoint_scheduler is not None:
+            session_id = getattr(self, "_session_id", "default")
+            self._checkpoint_scheduler.record_step(
+                owner_type="conversation",
+                owner_id=session_id,
+                tokens=0,
+            )
+            if self._checkpoint_scheduler.should_update(
+                "conversation", session_id
+            ):
+                asyncio.create_task(
+                    self._checkpoint_scheduler.schedule_update(
+                        owner_type="conversation",
+                        owner_id=session_id,
+                        messages=list(self.run_context.messages),
+                    )
+                )
 
     async def step_until_done(
         self, max_step: int
