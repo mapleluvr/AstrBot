@@ -119,7 +119,7 @@ DEFAULT_CONFIG = {
         "default_personality": "default",
         "persona_pool": ["*"],
         "prompt_prefix": "{{prompt}}",
-        "context_limit_reached_strategy": "truncate_by_turns",  # or llm_compress
+        "context_limit_reached_strategy": "truncate_by_turns",  # truncate_by_turns | llm_compress | checkpoint_compress
         "llm_compress_instruction": (
             "Based on our full conversation history, produce a concise summary of key takeaways and/or project progress.\n"
             "1. Systematically cover all core topics discussed and the final conclusion/outcome for each; clearly highlight the latest primary focus.\n"
@@ -180,6 +180,17 @@ DEFAULT_CONFIG = {
         "image_compress_options": {
             "max_size": 1280,
             "quality": 95,
+        },
+        "checkpoint_async": {
+            "enable": False,
+            "provider_id": "",
+            "default_for_local_agent": False,
+            "default_for_subagents": False,
+            "default_for_agent_group_members": False,
+            "keep_recent": 8,
+            "max_chunk_tokens": 6000,
+            "update_interval_turns": 8,
+            "update_interval_tokens": 12000,
         },
     },
     # SubAgent orchestrator mode:
@@ -3498,10 +3509,64 @@ CONFIG_METADATA_3 = {
                         "description": "用于上下文压缩的模型提供商 ID",
                         "type": "string",
                         "_special": "select_provider",
-                        "hint": "留空时将降级为“按对话轮数截断”的策略。",
+                        "hint": "留空时将降级为\u201c按对话轮数截断\u201d的策略。",
                         "condition": {
                             "provider_settings.context_limit_reached_strategy": "llm_compress",
                             "provider_settings.agent_runner_type": "local",
+                        },
+                    },
+                    "provider_settings.checkpoint_async": {
+                        "description": "异步状态检查点配置",
+                        "type": "object",
+                        "condition": {
+                            "provider_settings.context_limit_reached_strategy": "checkpoint_compress",
+                            "provider_settings.agent_runner_type": "local",
+                        },
+                        "items": {
+                            "provider_settings.checkpoint_async.enable": {
+                                "description": "启用 Checkpoint 能力（总闸门）",
+                                "type": "bool",
+                                "hint": "开启后允许异步 checkpoint 能力。不影响具体 Agent 是否启用。",
+                            },
+                            "provider_settings.checkpoint_async.provider_id": {
+                                "description": "Checkpoint 专用 Provider ID",
+                                "type": "string",
+                                "_special": "select_provider",
+                                "hint": "留空则复用主会话 Provider",
+                            },
+                            "provider_settings.checkpoint_async.default_for_local_agent": {
+                                "description": "Local Agent 默认启用",
+                                "type": "bool",
+                                "hint": "开启后 Local Agent 策略自动切换为 checkpoint_compress",
+                            },
+                            "provider_settings.checkpoint_async.default_for_subagents": {
+                                "description": "SubAgent 默认启用",
+                                "type": "bool",
+                            },
+                            "provider_settings.checkpoint_async.default_for_agent_group_members": {
+                                "description": "Agent Group 成员默认启用",
+                                "type": "bool",
+                            },
+                            "provider_settings.checkpoint_async.keep_recent": {
+                                "description": "保留最近消息数",
+                                "type": "int",
+                                "hint": "压缩时保留的 raw tail 消息数",
+                            },
+                            "provider_settings.checkpoint_async.max_chunk_tokens": {
+                                "description": "单 chunk 最大 tokens",
+                                "type": "int",
+                                "hint": "transcript 分块时每个 chunk 的最大 token 数",
+                            },
+                            "provider_settings.checkpoint_async.update_interval_turns": {
+                                "description": "更新间隔（轮次）",
+                                "type": "int",
+                                "hint": "每 N 轮触发一次后台 checkpoint 更新",
+                            },
+                            "provider_settings.checkpoint_async.update_interval_tokens": {
+                                "description": "更新间隔（tokens）",
+                                "type": "int",
+                                "hint": "每 N tokens 触发一次后台 checkpoint 更新",
+                            },
                         },
                     },
                 },
