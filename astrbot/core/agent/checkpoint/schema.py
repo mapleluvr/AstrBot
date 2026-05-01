@@ -84,16 +84,20 @@ def build_checkpoint_prompt(
     messages: list[dict[str, str]] = []
 
     if previous_checkpoint:
-        messages.append({
-            "role": "user",
-            "content": PREVIOUS_SUMMARY_INJECTION.format(
-                previous_checkpoint=previous_checkpoint,
-            ),
-        })
-        messages.append({
-            "role": "assistant",
-            "content": FORCED_ACKNOWLEDGMENT,
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": PREVIOUS_SUMMARY_INJECTION.format(
+                    previous_checkpoint=previous_checkpoint,
+                ),
+            }
+        )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": FORCED_ACKNOWLEDGMENT,
+            }
+        )
 
     return CHECKPOINT_SYSTEM_PROMPT, messages
 

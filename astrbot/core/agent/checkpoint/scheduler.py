@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,9 +33,7 @@ class CheckpointScheduler:
         self._token_counter: dict[str, int] = {}
         self._scheduled: set[str] = set()
 
-    def record_step(
-        self, owner_type: str, owner_id: str, tokens: int = 0
-    ) -> None:
+    def record_step(self, owner_type: str, owner_id: str, tokens: int = 0) -> None:
         """Record an agent step for threshold tracking."""
         key = f"{owner_type}:{owner_id}"
         self._turn_counter[key] = self._turn_counter.get(key, 0) + 1
@@ -49,9 +46,7 @@ class CheckpointScheduler:
             return False
         turns = self._turn_counter.get(key, 0)
         tokens = self._token_counter.get(key, 0)
-        return (
-            turns >= self.interval_turns or tokens >= self.interval_tokens
-        )
+        return turns >= self.interval_turns or tokens >= self.interval_tokens
 
     async def schedule_update(
         self,
@@ -79,12 +74,12 @@ class CheckpointScheduler:
 
             await self.store.mark_stale(owner_type, owner_id)
 
+            from astrbot.core.agent.checkpoint.renderer import CheckpointRenderer
             from astrbot.core.agent.checkpoint.schema import (
-                build_checkpoint_prompt,
                 FINAL_PROMPT_TEMPLATE,
+                build_checkpoint_prompt,
                 parse_checkpoint_yaml,
             )
-            from astrbot.core.agent.checkpoint.renderer import CheckpointRenderer
 
             renderer = CheckpointRenderer()
             previous_text = latest.checkpoint_text if latest else None
@@ -103,7 +98,9 @@ class CheckpointScheduler:
 
             transcript = renderer.render_segments(messages)
             for seg in transcript:
-                prompt_messages.append(Message(role=seg["role"], content=seg["content"]))
+                prompt_messages.append(
+                    Message(role=seg["role"], content=seg["content"])
+                )
 
             final_prompt = FINAL_PROMPT_TEMPLATE.format(
                 start_turn=covers_start,

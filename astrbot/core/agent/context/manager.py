@@ -1,7 +1,11 @@
 from astrbot import logger
 
 from ..message import Message
-from .compressor import CheckpointCompressor, LLMSummaryCompressor, TruncateByTurnsCompressor
+from .compressor import (
+    CheckpointCompressor,
+    LLMSummaryCompressor,
+    TruncateByTurnsCompressor,
+)
 from .config import ContextConfig
 from .token_counter import EstimateTokenCounter
 from .truncator import ContextTruncator
@@ -28,7 +32,9 @@ class ContextManager:
         self.token_counter = config.custom_token_counter or EstimateTokenCounter()
         self.truncator = ContextTruncator()
 
-        strategy = getattr(config, "context_limit_reached_strategy", "truncate_by_turns")
+        strategy = getattr(
+            config, "context_limit_reached_strategy", "truncate_by_turns"
+        )
 
         if config.custom_compressor:
             self.compressor = config.custom_compressor

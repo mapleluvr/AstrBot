@@ -77,12 +77,9 @@ class CheckpointStore:
     async def mark_stale(self, owner_type: str, owner_id: str) -> None:
         """Mark all checkpoints for an owner as stale."""
         async with self.db.get_db() as session:
-            stmt = (
-                select(StateCheckpoint)
-                .where(
-                    StateCheckpoint.owner_type == owner_type,
-                    StateCheckpoint.owner_id == owner_id,
-                )
+            stmt = select(StateCheckpoint).where(
+                StateCheckpoint.owner_type == owner_type,
+                StateCheckpoint.owner_id == owner_id,
             )
             result = await session.execute(stmt)
             checkpoints = result.scalars().all()
@@ -93,12 +90,9 @@ class CheckpointStore:
     async def delete_by_owner(self, owner_type: str, owner_id: str) -> None:
         """Delete all checkpoints for an owner."""
         async with self.db.get_db() as session:
-            stmt = (
-                select(StateCheckpoint)
-                .where(
-                    StateCheckpoint.owner_type == owner_type,
-                    StateCheckpoint.owner_id == owner_id,
-                )
+            stmt = select(StateCheckpoint).where(
+                StateCheckpoint.owner_type == owner_type,
+                StateCheckpoint.owner_id == owner_id,
             )
             result = await session.execute(stmt)
             for cp in result.scalars().all():
