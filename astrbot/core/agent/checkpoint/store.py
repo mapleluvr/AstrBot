@@ -22,7 +22,7 @@ class CheckpointStore:
         self, owner_type: str, owner_id: str
     ) -> StateCheckpoint | None:
         """Get the latest ready checkpoint for an owner."""
-        async with self.db.get_session() as session:
+        async with self.db.get_db() as session:
             stmt = (
                 select(StateCheckpoint)
                 .where(
@@ -68,7 +68,7 @@ class CheckpointStore:
             output_tokens=output_tokens,
             metadata_json=metadata_json,
         )
-        async with self.db.get_session() as session:
+        async with self.db.get_db() as session:
             session.add(checkpoint)
             await session.commit()
             await session.refresh(checkpoint)
@@ -76,7 +76,7 @@ class CheckpointStore:
 
     async def mark_stale(self, owner_type: str, owner_id: str) -> None:
         """Mark all checkpoints for an owner as stale."""
-        async with self.db.get_session() as session:
+        async with self.db.get_db() as session:
             stmt = (
                 select(StateCheckpoint)
                 .where(
@@ -92,7 +92,7 @@ class CheckpointStore:
 
     async def delete_by_owner(self, owner_type: str, owner_id: str) -> None:
         """Delete all checkpoints for an owner."""
-        async with self.db.get_session() as session:
+        async with self.db.get_db() as session:
             stmt = (
                 select(StateCheckpoint)
                 .where(
