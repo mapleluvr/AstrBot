@@ -243,3 +243,116 @@ class LLMSummaryCompressor:
         result.extend(recent_messages)
 
         return result
+
+
+class CheckpointCompressor:
+    """Checkpoint-based context compressor.
+
+    Uses a separate checkpoint prompt to generate structured YAML checkpoint
+    from old messages, then reconstructs the context as:
+    [system] [checkpoint-as-user] [acknowledgment-as-assistant] [raw_tail]
+    """
+
+    def __init__(
+        self,
+        provider: "Provider",
+        keep_recent: int = 8,
+        compression_threshold: float = 0.82,
+    ) -> None:
+        self.provider = provider
+        self.keep_recent = keep_recent
+        self.compression_threshold = compression_threshold
+
+    def should_compress(
+        self, messages: list[Message], current_tokens: int, max_tokens: int
+    ) -> bool:
+        if max_tokens <= 0 or current_tokens <= 0:
+            return False
+        usage_rate = current_tokens / max_tokens
+        return usage_rate > self.compression_threshold
+
+    async def __call__(self, messages: list[Message]) -> list[Message]:
+        """Generate checkpoint and return system + checkpoint + ack + raw_tail."""
+        from astrbot.core.agent.checkpoint.renderer import CheckpointRenderer
+        from astrbot.core.agent.checkpoint.schema import (
+            build_checkpoint_prompt,
+            parse_checkpoint_yaml,
+        )
+
+        if len(messages) <= self.keep_recent + 1:
+            return messages
+
+        system_messages, messages_to_summarize, recent_messages = split_history(
+            messages, self.keep_recent
+        )
+
+        if not messages_to_summarize:
+            return messages
+
+        renderer = CheckpointRenderer()
+        _, pre_messages = build_checkpoint_prompt(
+            previous_checkpoint=None,
+            version=1,
+            start_turn=1,
+            end_turn=len(messages_to_summarize),
+        )
+
+        # Build the prompt: system + previous checkpoint injection + transcript + final prompt
+        prompt_messages: list[Message] = []
+        for pm in pre_messages:
+            prompt_messages.append(Message(role=pm["role"], content=pm["content"]))
+
+        # Add transcript
+        transcript_segments = renderer.render_segments(messages_to_summarize)
+        for seg in transcript_segments:
+            prompt_messages.append(Message(role=seg["role"], content=seg["content"]))
+
+        # Add final instruction
+        from astrbot.core.agent.checkpoint.schema import FINAL_PROMPT_TEMPLATE
+
+        final_prompt = FINAL_PROMPT_TEMPLATE.format(
+            start_turn=1,
+            end_turn=len(messages_to_summarize),
+        )
+        prompt_messages.append(Message(role="user", content=final_prompt))
+
+        try:
+            response = await self.provider.text_chat(
+                contexts=prompt_messages,
+                system_prompt=(
+                    "You are a state checkpoint recorder. "
+                    "Output ONLY the YAML checkpoint, no other text."
+                ),
+            )
+            checkpoint_text = response.completion_text
+            _ = parse_checkpoint_yaml(checkpoint_text)  # validate parseable
+        except Exception as e:
+            logger.error(f"Failed to generate checkpoint: {e}")
+            return messages
+
+        # Build result: system + checkpoint + ack + raw_tail
+        result: list[Message] = []
+        result.extend(system_messages)
+
+        result.append(
+            Message(
+                role="user",
+                content=(
+                    "This is a state checkpoint covering previous interaction turns.\n\n"
+                    f"<CHECKPOINT>\n{checkpoint_text}\n</CHECKPOINT>"
+                ),
+            )
+        )
+        result.append(
+            Message(
+                role="assistant",
+                content=(
+                    "Acknowledged the state checkpoint. "
+                    "I will use this to recover context and continue the task."
+                ),
+            )
+        )
+
+        result.extend(recent_messages)
+
+        return result
