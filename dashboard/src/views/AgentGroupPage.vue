@@ -164,6 +164,31 @@
                     @click="removeMember(selectedPreset, idx)"
                   />
                 </div>
+                <!-- Member Checkpoint Control -->
+                <div class="member-checkpoint form-group">
+                  <label>Checkpoint:</label>
+                  <select v-model="member.checkpoint_async_enabled" class="form-select">
+                    <option :value="null">Inherit Default</option>
+                    <option :value="true">Enabled</option>
+                    <option :value="false">Disabled</option>
+                  </select>
+
+                  <span v-if="member.source_type === 'subagent' && member.checkpoint_async_enabled === null" class="hint">
+                    (inherited from SubAgent preset)
+                  </span>
+                  <span v-if="member.source_type === 'persona'" class="hint">
+                    Persona has no built-in checkpoint config. Configure here.
+                  </span>
+
+                  <div v-if="member.checkpoint_async_enabled !== false" class="form-group" style="margin-top: 8px;">
+                    <label>Checkpoint Provider ID:</label>
+                    <input
+                      v-model="member.checkpoint_async_provider_id"
+                      placeholder="Inherit (empty = use chain)"
+                      class="form-input"
+                    />
+                  </div>
+                </div>
                 <div v-if="member.source_type === 'subagent'" class="member-preview">
                   <template v-if="selectedSubAgentPreset(member)">
                     <div class="member-preview-title">{{ selectedSubAgentPreset(member)?.name }}</div>
@@ -626,7 +651,9 @@ function addMember(preset: AgentGroupPreset) {
     source_type: 'subagent',
     subagent_preset: '',
     persona_id: '',
-    enabled: true
+    enabled: true,
+    checkpoint_async_enabled: null,
+    checkpoint_async_provider_id: null
   })
 }
 
@@ -989,6 +1016,39 @@ onBeforeRouteLeave(async () => {
   .preset-list {
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   }
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dashboard-text);
+}
+
+.form-select,
+.form-input {
+  padding: 8px 12px;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 6px;
+  background: rgb(var(--v-theme-surface));
+  color: var(--dashboard-text);
+  font-size: 14px;
+}
+
+.form-select:focus,
+.form-input:focus {
+  outline: none;
+  border-color: rgb(var(--v-theme-primary));
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--dashboard-muted);
 }
 
 @media (max-width: 900px) {
