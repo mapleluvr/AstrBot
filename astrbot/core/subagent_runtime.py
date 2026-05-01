@@ -76,6 +76,8 @@ def normalize_subagent_orchestrator_config(raw: Any) -> dict[str, Any]:
             continue
         normalized.setdefault("provider_id", None)
         normalized.setdefault("persona_id", None)
+        normalized.setdefault("checkpoint_async_enabled", None)
+        normalized.setdefault("checkpoint_async_provider_id", None)
         normalized_agents.append(normalized)
 
     if not has_summary:
@@ -94,6 +96,8 @@ _MUTABLE_INSTANCE_FIELDS = {
     "skills",
     "max_persisted_turns",
     "max_persisted_tokens",
+    "checkpoint_async_enabled",
+    "checkpoint_async_provider_id",
 }
 
 
@@ -108,6 +112,10 @@ class SubAgentPreset:
     tools: list | None = None
     skills: list | None = None
     begin_dialogs: list | None = None
+    checkpoint_async_enabled: bool | None = None
+    """null = inherit category default, true = enabled, false = disabled"""
+    checkpoint_async_provider_id: str | None = None
+    """null = inherit from global/provider chain"""
 
 
 @dataclass
