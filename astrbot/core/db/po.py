@@ -175,6 +175,47 @@ class ConversationV2(TimestampMixin, SQLModel, table=True):
     )
 
 
+class StateCheckpoint(TimestampMixin, SQLModel, table=True):
+    """Persistent state checkpoint for long-context recovery.
+
+    Supports Local Agent conversations, SubAgent instances, and Agent Group members.
+    """
+
+    __tablename__: str = "state_checkpoints"
+
+    checkpoint_id: str = Field(
+        max_length=64,
+        nullable=False,
+        unique=True,
+        primary_key=True,
+        default_factory=lambda: str(uuid.uuid4()),
+    )
+    owner_type: str = Field(
+        max_length=32, nullable=False, index=True
+    )
+    owner_id: str = Field(max_length=256, nullable=False, index=True)
+    version: int = Field(default=1, nullable=False)
+    status: str = Field(max_length=32, nullable=False, index=True)
+    provider_id: str = Field(max_length=255, nullable=False)
+    strategy: str = Field(max_length=32, default="checkpoint_compress")
+    covers_start: int | None = Field(default=None)
+    covers_end: int = Field(default=0, nullable=False)
+    raw_tail_start: int = Field(default=0, nullable=False)
+    checkpoint_text: str = Field(sa_type=Text, nullable=False)
+    metadata_json: dict | None = Field(default=None, sa_type=JSON)
+    input_tokens: int | None = Field(default=None)
+    output_tokens: int | None = Field(default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_type",
+            "owner_id",
+            "version",
+            name="uix_state_checkpoint_owner_version",
+        ),
+    )
+
+
 class PersonaFolder(TimestampMixin, SQLModel, table=True):
     """Persona 文件夹，支持递归层级结构。
 
