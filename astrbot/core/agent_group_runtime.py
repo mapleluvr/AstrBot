@@ -71,6 +71,7 @@ def resolve_checkpoint_enabled(
 ) -> bool:
     """Resolve checkpoint enabled value using the chain:
     member > preset > category_default
+    Returns the first non-None value, or category_default.
     """
     if member_value is not None:
         return member_value
@@ -86,6 +87,7 @@ def resolve_checkpoint_provider_id(
 ) -> str:
     """Resolve checkpoint provider_id using the chain:
     member > preset > global
+    Returns the first non-None, non-empty value.
     """
     if member_value:
         return member_value
@@ -2340,7 +2342,10 @@ class AgentGroupRuntimeManager:
 
     @classmethod
     def _run_metadata(cls, run) -> dict:
-        return cls._value(run, "metadata") or cls._value(run, "metadata_json") or {}
+        result = cls._value(run, "metadata_json") or cls._value(run, "metadata")
+        if isinstance(result, dict):
+            return result
+        return {}
 
     @classmethod
     def _json_safe(cls, value: Any) -> Any:

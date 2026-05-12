@@ -249,6 +249,42 @@
         "llm_compress_provider_id": {
           "description": "Model Provider ID for Context Compression",
           "hint": "When left empty, will fall back to the 'Truncate by Turns' strategy."
+        },
+        "checkpoint_async": {
+          "enable": {
+            "description": "Enable Checkpoint Capability (Master Switch)",
+            "hint": "Allows async checkpoint capability across the system. Does not affect whether individual agents use it."
+          },
+          "provider_id": {
+            "description": "Checkpoint Provider ID",
+            "hint": "Leave empty to reuse the main session Provider"
+          },
+          "default_for_local_agent": {
+            "description": "Default for Local Agent",
+            "hint": "When enabled, Local Agent strategy auto-switches to checkpoint_compress"
+          },
+          "default_for_subagents": {
+            "description": "Default for SubAgents"
+          },
+          "default_for_agent_group_members": {
+            "description": "Default for Agent Group Members"
+          },
+          "keep_recent": {
+            "description": "Keep Recent Messages",
+            "hint": "Number of raw tail messages to preserve during compression"
+          },
+          "max_chunk_tokens": {
+            "description": "Max Chunk Tokens",
+            "hint": "Max tokens per transcript chunk"
+          },
+          "update_interval_turns": {
+            "description": "Update Interval (turns)",
+            "hint": "Trigger background checkpoint update every N turns"
+          },
+          "update_interval_tokens": {
+            "description": "Update Interval (tokens)",
+            "hint": "Trigger background checkpoint update every N tokens"
+          }
         }
       }
     },

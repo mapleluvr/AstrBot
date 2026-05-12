@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import traceback
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from astrbot import logger
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.context.truncator import ContextTruncator
 from astrbot.core.agent.message import Message
@@ -660,6 +662,9 @@ class SubAgentRuntimeManager:
                     image_urls,
                 )
             except Exception:
+                logger.error(
+                    f"Sub-agent execution failed for instance '{instance.name}':\n{traceback.format_exc()}"
+                )
                 return SubAgentRuntimeResult.failure(
                     SUBAGENT_EXECUTION_FAILED,
                     "Sub-agent execution failed.",

@@ -251,6 +251,42 @@
         "llm_compress_provider_id": {
           "description": "用于上下文压缩的模型提供商 ID",
           "hint": "留空时将降级为\"按对话轮数截断\"的策略。"
+        },
+        "checkpoint_async": {
+          "enable": {
+            "description": "启用 Checkpoint 能力（总闸门）",
+            "hint": "开启后允许异步 checkpoint 能力。不影响具体 Agent 是否启用。"
+          },
+          "provider_id": {
+            "description": "Checkpoint 专用 Provider ID",
+            "hint": "留空则复用主会话 Provider"
+          },
+          "default_for_local_agent": {
+            "description": "Local Agent 默认启用",
+            "hint": "开启后 Local Agent 策略自动切换为 checkpoint_compress"
+          },
+          "default_for_subagents": {
+            "description": "SubAgent 默认启用"
+          },
+          "default_for_agent_group_members": {
+            "description": "Agent Group 成员默认启用"
+          },
+          "keep_recent": {
+            "description": "保留最近消息数",
+            "hint": "压缩时保留的 raw tail 消息数"
+          },
+          "max_chunk_tokens": {
+            "description": "单 chunk 最大 tokens",
+            "hint": "transcript 分块时每个 chunk 的最大 token 数"
+          },
+          "update_interval_turns": {
+            "description": "更新间隔（轮次）",
+            "hint": "每 N 轮触发一次后台 checkpoint 更新"
+          },
+          "update_interval_tokens": {
+            "description": "更新间隔（tokens）",
+            "hint": "每 N tokens 触发一次后台 checkpoint 更新"
+          }
         }
       }
     },
