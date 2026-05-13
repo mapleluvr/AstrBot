@@ -163,3 +163,176 @@ async def test_cleanup_subagent_instances_by_scope(tmp_path):
     remaining = await db.list_subagent_instances(umo=umo)
 
     assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_create_and_get_latest_subagent_background_run(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "astrbot.db"))
+    await db.initialize()
+    instance = await db.create_subagent_instance(
+        umo="telegram:FriendMessage:user1",
+        scope_type="conversation",
+        scope_id="conv-1",
+        name="researcher",
+        preset_name="research",
+        history=[],
+    )
+
+    first = await db.create_subagent_background_run(
+        instance_id=instance.instance_id,
+        umo=instance.umo,
+        scope_type=instance.scope_type,
+        scope_id=instance.scope_id,
+        instance_name=instance.name,
+        preset_name=instance.preset_name,
+        status="queued",
+        input_text="first",
+        image_urls=[],
+        events=[{"type": "submitted", "message": "first"}],
+    )
+    second = await db.create_subagent_background_run(
+        instance_id=instance.instance_id,
+        umo=instance.umo,
+        scope_type=instance.scope_type,
+        scope_id=instance.scope_id,
+        instance_name=instance.name,
+        preset_name=instance.preset_name,
+        status="running",
+        input_text="second",
+        image_urls=["https://example.com/a.png"],
+        events=[{"type": "submitted", "message": "second"}],
+    )
+
+    loaded = await db.get_subagent_background_run(second.task_id)
+    latest = await db.get_latest_subagent_background_run(instance.instance_id)
+
+    assert first.task_id != second.task_id
+    assert loaded is not None
+    assert loaded.status == "running"
+    assert loaded.input_text == "second"
+    assert latest is not None
+    assert latest.task_id == second.task_id
+
+
+@pytest.mark.asyncio
+async def test_append_subagent_background_run_event_keeps_recent_entries(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "astrbot.db"))
+    await db.initialize()
+    instance = await db.create_subagent_instance(
+        umo="telegram:FriendMessage:user1",
+        scope_type="conversation",
+        scope_id="conv-1",
+        name="researcher",
+        preset_name="research",
+        history=[],
+    )
+    run = await db.create_subagent_background_run(
+        instance_id=instance.instance_id,
+        umo=instance.umo,
+        scope_type=instance.scope_type,
+        scope_id=instance.scope_id,
+        instance_name=instance.name,
+        preset_name=instance.preset_name,
+        status="running",
+        input_text="collect progress",
+        image_urls=[],
+        events=[],
+    )
+
+    updated = None
+    for idx in range(12):
+        updated = await db.append_subagent_background_run_event(
+            run.task_id,
+            {"type": "tool_call", "message": f"tool-{idx}", "tool_name": f"tool_{idx}"},
+            max_events=5,
+        )
+
+    assert updated is not None
+    assert [event["message"] for event in updated.events] == [
+        "tool-7",
+        "tool-8",
+        "tool-9",
+        "tool-10",
+        "tool-11",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_subagent_background_run_updates_allowed_runtime_fields(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "astrbot.db"))
+    await db.initialize()
+    instance = await db.create_subagent_instance(
+        umo="telegram:FriendMessage:user1",
+        scope_type="conversation",
+        scope_id="conv-1",
+        name="researcher",
+        preset_name="research",
+        history=[],
+    )
+    run = await db.create_subagent_background_run(
+        instance_id=instance.instance_id,
+        umo=instance.umo,
+        scope_type=instance.scope_type,
+        scope_id=instance.scope_id,
+        instance_name=instance.name,
+        preset_name=instance.preset_name,
+        status="running",
+        input_text="collect progress",
+        image_urls=["https://example.com/a.png"],
+        events=[],
+    )
+
+    updated = await db.update_subagent_background_run(
+        run.task_id,
+        status="completed",
+        final_response="done",
+        error_message=None,
+        token_usage=42,
+    )
+
+    assert updated is not None
+    assert updated.status == "completed"
+    assert updated.final_response == "done"
+    assert updated.token_usage == 42
+    assert updated.input_text == "collect progress"
+    assert updated.image_urls == ["https://example.com/a.png"]
+
+
+@pytest.mark.asyncio
+async def test_update_subagent_background_run_rejects_provenance_fields(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "astrbot.db"))
+    await db.initialize()
+    instance = await db.create_subagent_instance(
+        umo="telegram:FriendMessage:user1",
+        scope_type="conversation",
+        scope_id="conv-1",
+        name="researcher",
+        preset_name="research",
+        history=[],
+    )
+    run = await db.create_subagent_background_run(
+        instance_id=instance.instance_id,
+        umo=instance.umo,
+        scope_type=instance.scope_type,
+        scope_id=instance.scope_id,
+        instance_name=instance.name,
+        preset_name=instance.preset_name,
+        status="running",
+        input_text="collect progress",
+        image_urls=["https://example.com/a.png"],
+        events=[],
+    )
+
+    with pytest.raises(ValueError, match="protected subagent background run fields"):
+        await db.update_subagent_background_run(
+            run.task_id,
+            instance_id="other-instance",
+            input_text="rewritten",
+            image_urls=[],
+        )
+
+    loaded = await db.get_subagent_background_run(run.task_id)
+    assert loaded is not None
+    assert loaded.instance_id == instance.instance_id
+    assert loaded.input_text == "collect progress"
+    assert loaded.image_urls == ["https://example.com/a.png"]

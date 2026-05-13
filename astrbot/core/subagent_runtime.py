@@ -5,6 +5,8 @@ import copy
 import inspect
 import traceback
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -12,7 +14,9 @@ from sqlalchemy.exc import IntegrityError
 from astrbot import logger
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.context.truncator import ContextTruncator
+from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import Message
+from astrbot.core.agent.run_context import ContextWrapper
 
 PRESET_NOT_FOUND = "preset_not_found"
 INSTANCE_NOT_FOUND = "instance_not_found"
@@ -177,6 +181,70 @@ class _InstanceLockResult(SubAgentRuntimeResult):
         self._manager._instance_locks.pop(self._instance_id, None)
 
 
+class _BackgroundRunHooks(BaseAgentRunHooks[Any]):
+    def __init__(self, manager: SubAgentRuntimeManager, task_id: str):
+        self._manager = manager
+        self._task_id = task_id
+
+    async def on_agent_begin(self, run_context: ContextWrapper[Any]) -> None:
+        return None
+
+    async def on_tool_start(
+        self,
+        run_context: ContextWrapper[Any],
+        tool,
+        tool_args: dict | None,
+    ) -> None:
+        tool_name = getattr(tool, "name", None)
+        await self._manager._safe_append_background_run_event(
+            self._task_id,
+            "tool_call",
+            f"Called tool {tool_name}.",
+            tool_name=tool_name,
+        )
+
+    async def on_tool_end(
+        self,
+        run_context: ContextWrapper[Any],
+        tool,
+        tool_args: dict | None,
+        tool_result,
+    ) -> None:
+        if tool_result is None or not getattr(tool_result, "isError", False):
+            return
+        tool_name = getattr(tool, "name", None)
+        error_text = self._tool_result_text(tool_result)
+        if error_text:
+            message = f"Tool {tool_name} failed: {error_text}"
+        else:
+            message = f"Tool {tool_name} failed."
+        await self._manager._safe_append_background_run_event(
+            self._task_id,
+            "tool_error",
+            message,
+            tool_name=tool_name,
+        )
+
+    async def on_agent_done(
+        self, run_context: ContextWrapper[Any], llm_response
+    ) -> None:
+        return None
+
+    @staticmethod
+    def _tool_result_text(tool_result) -> str:
+        parts: list[str] = []
+        for item in getattr(tool_result, "content", []) or []:
+            text = getattr(item, "text", None)
+            if text:
+                parts.append(str(text))
+                continue
+            resource = getattr(item, "resource", None)
+            resource_text = getattr(resource, "text", None)
+            if resource_text:
+                parts.append(str(resource_text))
+        return "\n\n".join(part for part in parts if part).strip()
+
+
 class SubAgentRuntimeManager:
     def __init__(
         self,
@@ -194,11 +262,15 @@ class SubAgentRuntimeManager:
         self.skill_manager = skill_manager
         self.presets: dict[str, SubAgentPreset] = {}
         self._instance_locks: dict[str, bool] = {}
+        self._instance_lifecycle_locks: dict[str, asyncio.Lock] = {}
+        self._background_tasks: dict[str, asyncio.Task] = {}
+        self._background_run_terminal_overrides: dict[str, dict[str, Any]] = {}
         self._scope_create_locks: dict[str, asyncio.Lock] = {}
         self.runtime_enabled = False
         self.max_instances_per_scope = 8
         self.max_persisted_turns = 20
         self.max_persisted_tokens = None
+        self.max_background_run_events = 10
         if config is not None:
             self.reload_from_config(config)
 
@@ -291,10 +363,36 @@ class SubAgentRuntimeManager:
         return presets
 
     async def cleanup_for_session(self, umo: str) -> None:
-        await self.db.delete_subagent_instances_for_session(umo)
+        instances = await self.db.list_subagent_instances(
+            umo=umo,
+            scope_type="session",
+            scope_id=umo,
+        )
+        await self._cleanup_instances(instances)
 
     async def cleanup_for_conversation(self, conversation_id: str) -> None:
-        await self.db.delete_subagent_instances_for_conversation(conversation_id)
+        conversation = await self.db.get_conversation_by_id(conversation_id)
+        if conversation is None:
+            return
+
+        instances = await self.db.list_subagent_instances(
+            umo=conversation.user_id,
+            scope_type="conversation",
+            scope_id=conversation_id,
+        )
+        await self._cleanup_instances(instances)
+
+    async def _cleanup_instances(self, instances) -> None:
+        for instance in instances:
+            deleted = await self.delete_instance_by_id(instance.instance_id)
+            if deleted.ok:
+                continue
+            if deleted.error is not None and deleted.error.error_code == INSTANCE_BUSY:
+                continue
+            logger.warning(
+                "Failed to delete sub-agent instance "
+                f"'{instance.instance_id}' during cleanup."
+            )
 
     async def list_instances(self, event):
         if not self.runtime_enabled:
@@ -311,6 +409,270 @@ class SubAgentRuntimeManager:
             scope_id=umo,
         )
         return conversation_instances + session_instances
+
+    @staticmethod
+    def _background_event(event_type: str, message: str, **details) -> dict[str, Any]:
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": event_type,
+            "message": message,
+        }
+        payload.update(
+            {key: value for key, value in details.items() if value is not None}
+        )
+        return payload
+
+    async def _append_background_run_event(
+        self,
+        task_id: str,
+        event_type: str,
+        message: str,
+        **details,
+    ) -> None:
+        await self.db.append_subagent_background_run_event(
+            task_id,
+            self._background_event(event_type, message, **details),
+            max_events=self.max_background_run_events,
+        )
+
+    async def _safe_append_background_run_event(
+        self,
+        task_id: str,
+        event_type: str,
+        message: str,
+        **details,
+    ) -> None:
+        try:
+            await self._append_background_run_event(
+                task_id,
+                event_type,
+                message,
+                **details,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Failed to append background run event "
+                f"'{event_type}' for task '{task_id}':\n"
+                f"{traceback.format_exc()}"
+            )
+
+    async def _best_effort_update_background_run(
+        self,
+        task_id: str,
+        action: str,
+        **updates,
+    ):
+        try:
+            return await self.db.update_subagent_background_run(task_id, **updates)
+        except asyncio.CancelledError:
+            logger.warning(
+                "Cancelled while "
+                f"{action} for background run '{task_id}':\n"
+                f"{traceback.format_exc()}"
+            )
+        except Exception:
+            logger.warning(
+                "Failed while "
+                f"{action} for background run '{task_id}':\n"
+                f"{traceback.format_exc()}"
+            )
+        return None
+
+    async def _best_effort_append_background_run_event(
+        self,
+        task_id: str,
+        event_type: str,
+        message: str,
+        **details,
+    ) -> None:
+        try:
+            await self._append_background_run_event(
+                task_id,
+                event_type,
+                message,
+                **details,
+            )
+        except asyncio.CancelledError:
+            logger.warning(
+                "Cancelled while appending background run event "
+                f"'{event_type}' for task '{task_id}':\n"
+                f"{traceback.format_exc()}"
+            )
+        except Exception:
+            logger.warning(
+                "Failed to append background run event "
+                f"'{event_type}' for task '{task_id}':\n"
+                f"{traceback.format_exc()}"
+            )
+
+    async def _best_effort_mark_background_run_failed(
+        self,
+        task_id: str,
+        error_message: str,
+    ) -> None:
+        await self._best_effort_update_background_run(
+            task_id,
+            "persisting failed status",
+            status="failed",
+            error_message=error_message,
+            completed_at=datetime.now(timezone.utc),
+        )
+        await self._best_effort_append_background_run_event(
+            task_id,
+            "failed",
+            f"Background run failed: {error_message}",
+        )
+
+    def _discard_background_task(
+        self,
+        task_id: str,
+        task: asyncio.Task | None = None,
+    ) -> None:
+        if task is not None and self._background_tasks.get(task_id) is not task:
+            return
+        self._background_tasks.pop(task_id, None)
+
+    def _get_live_background_task(self, task_id: str) -> asyncio.Task | None:
+        task = self._background_tasks.get(task_id)
+        if task is None:
+            return None
+        if task.done():
+            self._discard_background_task(task_id, task)
+            return None
+        return task
+
+    def _track_background_task(self, task_id: str, task: asyncio.Task) -> None:
+        self._background_tasks[task_id] = task
+        task.add_done_callback(
+            lambda finished_task, task_id=task_id: self._discard_background_task(
+                task_id, finished_task
+            )
+        )
+
+    @staticmethod
+    def _background_run_with_overrides(run, **overrides):
+        if run is None:
+            return None
+        payload = {
+            "task_id": getattr(run, "task_id", None),
+            "status": getattr(run, "status", None),
+            "created_at": getattr(run, "created_at", None),
+            "updated_at": getattr(run, "updated_at", None),
+            "completed_at": getattr(run, "completed_at", None),
+            "final_response": getattr(run, "final_response", None),
+            "error_message": getattr(run, "error_message", None),
+            "token_usage": getattr(run, "token_usage", None),
+            "events": list(getattr(run, "events", []) or []),
+        }
+        payload.update(overrides)
+        return SimpleNamespace(**payload)
+
+    @staticmethod
+    def _background_run_is_terminal(run) -> bool:
+        return run is not None and getattr(run, "status", None) not in {
+            "queued",
+            "running",
+        }
+
+    @staticmethod
+    def _background_run_has_durable_completion_markers(run) -> bool:
+        return bool(
+            getattr(run, "completed_at", None) is not None
+            or getattr(run, "final_response", None) is not None
+        )
+
+    async def _reconcile_background_run(self, run):
+        if run is None:
+            return run
+        if self._background_run_is_terminal(run):
+            self._background_run_terminal_overrides.pop(run.task_id, None)
+            return run
+        if self._get_live_background_task(run.task_id) is not None:
+            return run
+        terminal_override = self._background_run_terminal_overrides.get(run.task_id)
+        if terminal_override is not None:
+            if terminal_override.get("status") == "completed":
+                updated_run = await self._best_effort_update_background_run(
+                    run.task_id,
+                    "persisting completed status during reconcile",
+                    status="completed",
+                    final_response=terminal_override.get("final_response"),
+                    error_message=None,
+                    token_usage=terminal_override.get("token_usage"),
+                    completed_at=terminal_override.get("completed_at"),
+                )
+                refreshed_run = await self.db.get_subagent_background_run(run.task_id)
+                terminal_run = None
+                if self._background_run_is_terminal(refreshed_run):
+                    terminal_run = refreshed_run
+                elif self._background_run_is_terminal(updated_run):
+                    terminal_run = updated_run
+                if terminal_run is not None:
+                    self._background_run_terminal_overrides.pop(run.task_id, None)
+                    return terminal_run
+            return self._background_run_with_overrides(run, **terminal_override)
+        if self._background_run_has_durable_completion_markers(run):
+            completed_override = {
+                "status": "completed",
+                "final_response": getattr(run, "final_response", None),
+                "error_message": None,
+                "token_usage": getattr(run, "token_usage", None),
+                "completed_at": getattr(run, "completed_at", None),
+            }
+            try:
+                updated_run = await self.db.update_subagent_background_run(
+                    run.task_id,
+                    status="completed",
+                    final_response=completed_override["final_response"],
+                    error_message=None,
+                    token_usage=completed_override["token_usage"],
+                    completed_at=completed_override["completed_at"],
+                )
+            except Exception:
+                return self._background_run_with_overrides(run, **completed_override)
+            refreshed_run = await self.db.get_subagent_background_run(run.task_id)
+            return refreshed_run or updated_run or self._background_run_with_overrides(
+                run, **completed_override
+            )
+
+        error_message = "Background run state was stale or interrupted; no active runtime task was found."
+        updated_run = await self.db.update_subagent_background_run(
+            run.task_id,
+            status="failed",
+            error_message=error_message,
+            completed_at=datetime.now(timezone.utc),
+        )
+        await self._safe_append_background_run_event(
+            run.task_id,
+            "failed",
+            f"Background run failed: {error_message}",
+        )
+        refreshed_run = await self.db.get_subagent_background_run(run.task_id)
+        return refreshed_run or updated_run or run
+
+    @staticmethod
+    def _background_run_payload(run) -> dict[str, Any] | None:
+        if run is None:
+            return None
+        return {
+            "task_id": run.task_id,
+            "status": run.status,
+            "created_at": run.created_at.isoformat()
+            if getattr(run, "created_at", None)
+            else None,
+            "updated_at": run.updated_at.isoformat()
+            if getattr(run, "updated_at", None)
+            else None,
+            "completed_at": run.completed_at.isoformat()
+            if getattr(run, "completed_at", None)
+            else None,
+            "final_response": getattr(run, "final_response", None),
+            "error_message": getattr(run, "error_message", None),
+            "token_usage": getattr(run, "token_usage", None),
+            "events": list(getattr(run, "events", []) or []),
+        }
 
     async def get_instance(self, event, name, scope_type=None) -> SubAgentRuntimeResult:
         if not self.runtime_enabled:
@@ -357,6 +719,27 @@ class SubAgentRuntimeManager:
                 "Sub-agent instance was not found.",
             )
         return SubAgentRuntimeResult.success(instance)
+
+    async def get_instance_status(
+        self,
+        event,
+        name,
+        scope_type=None,
+    ) -> SubAgentRuntimeResult:
+        loaded = await self.get_instance(event, name, scope_type=scope_type)
+        if not loaded.ok:
+            return loaded
+        latest_run = await self.db.get_latest_subagent_background_run(
+            loaded.data.instance_id
+        )
+        latest_run = await self._reconcile_background_run(latest_run)
+        return SubAgentRuntimeResult.success(
+            {
+                "instance": loaded.data,
+                "busy": self.is_instance_locked(loaded.data.instance_id),
+                "background_run": self._background_run_payload(latest_run),
+            }
+        )
 
     async def create_instance(
         self,
@@ -530,11 +913,6 @@ class SubAgentRuntimeManager:
         loaded = await self.get_instance(event, name, scope_type=scope_type)
         if not loaded.ok:
             return loaded
-        if self.is_instance_locked(loaded.data.instance_id):
-            return SubAgentRuntimeResult.failure(
-                INSTANCE_BUSY,
-                "Sub-agent instance is busy.",
-            )
 
         updates = dict(updates or {})
         invalid_fields = sorted(set(updates) - _MUTABLE_INSTANCE_FIELDS)
@@ -561,10 +939,17 @@ class SubAgentRuntimeManager:
                     {"skill": invalid_skill},
                 )
 
-        updated = await self.db.update_subagent_instance(
-            loaded.data.instance_id,
-            **updates,
-        )
+        async with self._instance_lifecycle_lock(loaded.data.instance_id):
+            if self.is_instance_locked(loaded.data.instance_id):
+                return SubAgentRuntimeResult.failure(
+                    INSTANCE_BUSY,
+                    "Sub-agent instance is busy.",
+                )
+
+            updated = await self.db.update_subagent_instance(
+                loaded.data.instance_id,
+                **updates,
+            )
         if updated is None:
             return SubAgentRuntimeResult.failure(
                 INSTANCE_NOT_FOUND,
@@ -581,17 +966,18 @@ class SubAgentRuntimeManager:
         loaded = await self.get_instance(event, name, scope_type=scope_type)
         if not loaded.ok:
             return loaded
-        if self.is_instance_locked(loaded.data.instance_id):
-            return SubAgentRuntimeResult.failure(
-                INSTANCE_BUSY,
-                "Sub-agent instance is busy.",
+        async with self._instance_lifecycle_lock(loaded.data.instance_id):
+            if self.is_instance_locked(loaded.data.instance_id):
+                return SubAgentRuntimeResult.failure(
+                    INSTANCE_BUSY,
+                    "Sub-agent instance is busy.",
+                )
+            return await self.save_history(
+                loaded.data,
+                [],
+                token_usage=0,
+                begin_dialogs_injected=False,
             )
-        return await self.save_history(
-            loaded.data,
-            [],
-            token_usage=0,
-            begin_dialogs_injected=False,
-        )
 
     async def delete_instance(
         self,
@@ -602,21 +988,23 @@ class SubAgentRuntimeManager:
         loaded = await self.get_instance(event, name, scope_type=scope_type)
         if not loaded.ok:
             return loaded
-        if self.is_instance_locked(loaded.data.instance_id):
-            return SubAgentRuntimeResult.failure(
-                INSTANCE_BUSY,
-                "Sub-agent instance is busy.",
-            )
-        await self.db.delete_subagent_instance(loaded.data.instance_id)
+        async with self._instance_lifecycle_lock(loaded.data.instance_id):
+            if self.is_instance_locked(loaded.data.instance_id):
+                return SubAgentRuntimeResult.failure(
+                    INSTANCE_BUSY,
+                    "Sub-agent instance is busy.",
+                )
+            await self.db.delete_subagent_instance(loaded.data.instance_id)
         return SubAgentRuntimeResult.success(loaded.data)
 
     async def delete_instance_by_id(self, instance_id) -> SubAgentRuntimeResult:
-        if self.is_instance_locked(instance_id):
-            return SubAgentRuntimeResult.failure(
-                INSTANCE_BUSY,
-                "Sub-agent instance is busy.",
-            )
-        await self.db.delete_subagent_instance(instance_id)
+        async with self._instance_lifecycle_lock(instance_id):
+            if self.is_instance_locked(instance_id):
+                return SubAgentRuntimeResult.failure(
+                    INSTANCE_BUSY,
+                    "Sub-agent instance is busy.",
+                )
+            await self.db.delete_subagent_instance(instance_id)
         return SubAgentRuntimeResult.success({"instance_id": instance_id})
 
     async def run_instance(
@@ -627,32 +1015,144 @@ class SubAgentRuntimeManager:
         image_urls=None,
         scope_type=None,
         background_task=False,
+        tool_call_timeout=120,
     ) -> SubAgentRuntimeResult:
-        if background_task:
-            return SubAgentRuntimeResult.failure(
-                "background_task_not_supported",
-                "Persistent sub-agent background execution is not supported yet.",
-            )
-
         loaded = await self.get_instance(event, name, scope_type=scope_type)
         if not loaded.ok:
             return loaded
 
         instance = loaded.data
-        lock = self.try_acquire_instance_lock(instance.instance_id)
-        if not lock.ok:
-            return lock
+        async with self._instance_lifecycle_lock(instance.instance_id):
+            instance = await self.db.get_subagent_instance_by_id(instance.instance_id)
+            if instance is None:
+                return SubAgentRuntimeResult.failure(
+                    INSTANCE_NOT_FOUND,
+                    "Sub-agent instance was not found.",
+                )
+
+            lock = self.try_acquire_instance_lock(instance.instance_id)
+            if not lock.ok:
+                return lock
+
+            try:
+                messages = list(instance.history or [])
+                begin_dialogs_injected = bool(instance.begin_dialogs_injected)
+                if not begin_dialogs_injected:
+                    preset = self.presets.get(instance.preset_name)
+                    if preset is not None and preset.begin_dialogs:
+                        messages.extend(list(preset.begin_dialogs))
+                    begin_dialogs_injected = True
+                messages.append({"role": "user", "content": input_text})
+
+                if background_task:
+                    plugin_context = None
+                    if hasattr(event, "get_extra"):
+                        plugin_context = event.get_extra("subagent_runtime_context")
+                    if plugin_context is None:
+                        plugin_context = getattr(event, "context", None)
+                    if plugin_context is None:
+                        await lock.__aexit__(None, None, None)
+                        return SubAgentRuntimeResult.failure(
+                            SUBAGENT_EXECUTION_FAILED,
+                            "Sub-agent runtime execution context is not available.",
+                        )
+
+                    background_run = None
+                    try:
+                        background_run = await self.db.create_subagent_background_run(
+                            instance_id=instance.instance_id,
+                            umo=instance.umo,
+                            scope_type=instance.scope_type,
+                            scope_id=instance.scope_id,
+                            instance_name=instance.name,
+                            preset_name=instance.preset_name,
+                            status="queued",
+                            input_text=input_text,
+                            image_urls=list(image_urls or []),
+                            events=[
+                                self._background_event(
+                                    "queued",
+                                    "Background run queued.",
+                                )
+                            ],
+                        )
+                        wake_context = ContextWrapper(
+                            context=SimpleNamespace(context=plugin_context, event=event),
+                            tool_call_timeout=tool_call_timeout,
+                        )
+                        task = asyncio.create_task(
+                            self._run_instance_background(
+                                lock=lock,
+                                task_id=background_run.task_id,
+                                wake_context=wake_context,
+                                event=event,
+                                instance=instance,
+                                messages=messages,
+                                input_text=input_text,
+                                image_urls=list(image_urls or []),
+                                begin_dialogs_injected=begin_dialogs_injected,
+                            )
+                        )
+                    except BaseException as exc:
+                        error_message = str(exc) or exc.__class__.__name__
+                        if isinstance(exc, asyncio.CancelledError):
+                            error_message = (
+                                "Background run was cancelled before scheduling."
+                            )
+                        try:
+                            if background_run is not None:
+                                try:
+                                    await self.db.update_subagent_background_run(
+                                        background_run.task_id,
+                                        status="failed",
+                                        error_message=error_message,
+                                        completed_at=datetime.now(timezone.utc),
+                                    )
+                                    await self._safe_append_background_run_event(
+                                        background_run.task_id,
+                                        "failed",
+                                        f"Background run failed: {error_message}",
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "Failed to record background submission failure for "
+                                        f"instance '{instance.name}':\n"
+                                        f"{traceback.format_exc()}"
+                                    )
+                        finally:
+                            await lock.__aexit__(None, None, None)
+                        if isinstance(exc, asyncio.CancelledError):
+                            raise
+                        logger.error(
+                            f"Sub-agent background submission failed for instance '{instance.name}':\n{traceback.format_exc()}"
+                        )
+                        return SubAgentRuntimeResult.failure(
+                            SUBAGENT_EXECUTION_FAILED,
+                            "Sub-agent execution failed.",
+                        )
+
+                    self._track_background_task(background_run.task_id, task)
+                    return SubAgentRuntimeResult.success(
+                        {
+                            "background_task": True,
+                            "task_id": background_run.task_id,
+                            "status": "queued",
+                            "metadata": self._run_metadata(instance),
+                        }
+                    )
+            except BaseException as exc:
+                await lock.__aexit__(None, None, None)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                logger.error(
+                    f"Sub-agent setup failed for instance '{instance.name}':\n{traceback.format_exc()}"
+                )
+                return SubAgentRuntimeResult.failure(
+                    SUBAGENT_EXECUTION_FAILED,
+                    "Sub-agent execution failed.",
+                )
 
         async with lock:
-            messages = list(instance.history or [])
-            begin_dialogs_injected = bool(instance.begin_dialogs_injected)
-            if not begin_dialogs_injected:
-                preset = self.presets.get(instance.preset_name)
-                if preset is not None and preset.begin_dialogs:
-                    messages.extend(list(preset.begin_dialogs))
-                begin_dialogs_injected = True
-            messages.append({"role": "user", "content": input_text})
-
             try:
                 execution = await self._execute_instance(
                     event,
@@ -691,6 +1191,214 @@ class SubAgentRuntimeManager:
             }
         )
 
+    async def _run_instance_background(
+        self,
+        *,
+        lock: _InstanceLockResult,
+        task_id: str,
+        wake_context: ContextWrapper[Any],
+        event,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        begin_dialogs_injected,
+    ) -> None:
+        from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+
+        wake_result_text = ""
+        wake_extra_fields = {
+            "instance_id": instance.instance_id,
+            "status": "failed",
+        }
+        cancelled_error: asyncio.CancelledError | None = None
+        history_saved = False
+        try:
+            await self.db.update_subagent_background_run(task_id, status="running")
+            await self._safe_append_background_run_event(
+                task_id,
+                "started",
+                "Background run started.",
+            )
+
+            execution = await self._execute_instance(
+                event,
+                instance,
+                messages,
+                input_text,
+                image_urls,
+                agent_hooks=_BackgroundRunHooks(self, task_id),
+            )
+            final_response = execution.get("final_response", "")
+            history = execution.get("history", messages)
+            token_usage = execution.get(
+                "token_usage", getattr(instance, "token_usage", 0)
+            )
+
+            saved = await self.save_history(
+                instance,
+                history,
+                token_usage=token_usage,
+                begin_dialogs_injected=begin_dialogs_injected,
+            )
+            if not saved.ok:
+                raise RuntimeError(
+                    saved.error.message if saved.error else "save failed"
+                )
+            history_saved = True
+
+            wake_result_text = final_response
+            wake_extra_fields = {
+                "instance_id": instance.instance_id,
+                "status": "completed",
+                "final_response": final_response,
+                "token_usage": token_usage,
+            }
+            completed_at = datetime.now(timezone.utc)
+            completed_override = {
+                "status": "completed",
+                "final_response": final_response,
+                "error_message": None,
+                "token_usage": token_usage,
+                "completed_at": completed_at,
+                "updated_at": completed_at,
+            }
+
+            try:
+                await self.db.update_subagent_background_run(
+                    task_id,
+                    status="completed",
+                    final_response=final_response,
+                    error_message=None,
+                    token_usage=token_usage,
+                    completed_at=completed_at,
+                )
+                self._background_run_terminal_overrides.pop(task_id, None)
+            except asyncio.CancelledError as exc:
+                cancelled_error = exc
+                self._background_run_terminal_overrides[task_id] = completed_override
+                try:
+                    await self.db.update_subagent_background_run(
+                        task_id,
+                        final_response=final_response,
+                        error_message=None,
+                        token_usage=token_usage,
+                        completed_at=completed_at,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist durable completion markers for background "
+                        f"run '{task_id}' on instance '{instance.name}' after the "
+                        "completed status write was cancelled."
+                    )
+                logger.warning(
+                    "Cancelled while persisting completed status for background run "
+                    f"'{task_id}' on instance '{instance.name}' after history was "
+                    f"saved; preserving successful runtime state.\n{traceback.format_exc()}"
+                )
+            except Exception:
+                self._background_run_terminal_overrides[task_id] = completed_override
+                try:
+                    await self.db.update_subagent_background_run(
+                        task_id,
+                        final_response=final_response,
+                        error_message=None,
+                        token_usage=token_usage,
+                        completed_at=completed_at,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist durable completion markers for background "
+                        f"run '{task_id}' on instance '{instance.name}' after the "
+                        "completed status write failed."
+                    )
+                logger.warning(
+                    "Failed to persist completed status for background run "
+                    f"'{task_id}' on instance '{instance.name}' after history was "
+                    f"saved; preserving successful runtime state.\n{traceback.format_exc()}"
+                )
+
+            # Never downgrade a durably completed run if best-effort finalization fails.
+            try:
+                await self._append_background_run_event(
+                    task_id,
+                    "completed",
+                    "Background run completed.",
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to append completed event for background run "
+                    f"'{task_id}' on instance '{instance.name}':\n"
+                    f"{traceback.format_exc()}"
+                )
+        except asyncio.CancelledError as exc:
+            cancelled_error = exc
+            if history_saved:
+                logger.warning(
+                    "Sub-agent background execution was cancelled after history was "
+                    "saved for instance "
+                    f"'{instance.name}' (task '{task_id}')."
+                )
+            else:
+                error_message = "Background run was cancelled."
+                await self._best_effort_mark_background_run_failed(
+                    task_id,
+                    error_message,
+                )
+                wake_result_text = error_message
+                wake_extra_fields = {
+                    "instance_id": instance.instance_id,
+                    "status": "failed",
+                    "error_message": error_message,
+                }
+        except Exception as exc:
+            error_message = str(exc)
+            logger.error(
+                f"Sub-agent background execution failed for instance '{instance.name}':\n{traceback.format_exc()}"
+            )
+            if history_saved:
+                logger.warning(
+                    "Sub-agent background execution hit a post-save error for "
+                    f"instance '{instance.name}' (task '{task_id}'); preserving the "
+                    "successful runtime state."
+                )
+            else:
+                await self._best_effort_mark_background_run_failed(
+                    task_id,
+                    error_message,
+                )
+                wake_result_text = error_message
+                wake_extra_fields = {
+                    "instance_id": instance.instance_id,
+                    "status": "failed",
+                    "error_message": error_message,
+                }
+        finally:
+            await lock.__aexit__(None, None, None)
+
+        try:
+            await FunctionToolExecutor._wake_main_agent_for_background_result(
+                wake_context,
+                task_id=task_id,
+                tool_name="run_subagent",
+                result_text=wake_result_text,
+                tool_args={
+                    "name": instance.name,
+                    "input": input_text,
+                    "image_urls": list(image_urls or []),
+                    "background_task": True,
+                },
+                note=f"Background sub-agent run for {instance.name} finished.",
+                summary_name=instance.name,
+                extra_result_fields=wake_extra_fields,
+            )
+        except Exception:
+            logger.error(
+                f"Sub-agent background wake-up failed for instance '{instance.name}':\n{traceback.format_exc()}"
+            )
+        if cancelled_error is not None:
+            raise cancelled_error
+
     async def _execute_instance(
         self,
         event,
@@ -698,6 +1406,8 @@ class SubAgentRuntimeManager:
         messages,
         input_text,
         image_urls,
+        *,
+        agent_hooks=None,
     ):
         from astrbot.core.astr_agent_tool_exec import execute_persistent_subagent
 
@@ -707,6 +1417,7 @@ class SubAgentRuntimeManager:
             messages,
             input_text,
             image_urls=image_urls,
+            agent_hooks=agent_hooks,
         )
 
     def prune_history_for_persistence(
@@ -818,6 +1529,9 @@ class SubAgentRuntimeManager:
             return _InstanceLockResult(self, instance_id, ok=False)
         self._instance_locks[instance_id] = True
         return _InstanceLockResult(self, instance_id, ok=True)
+
+    def _instance_lifecycle_lock(self, instance_id) -> asyncio.Lock:
+        return self._instance_lifecycle_locks.setdefault(instance_id, asyncio.Lock())
 
     def _first_invalid_tool(self, tools) -> str | None:
         if tools is None:

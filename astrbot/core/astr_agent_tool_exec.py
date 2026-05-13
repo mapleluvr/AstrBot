@@ -713,6 +713,7 @@ async def execute_persistent_subagent(
     input_text,
     *,
     image_urls=None,
+    agent_hooks=None,
 ) -> dict[str, T.Any]:
     plugin_context = None
     if hasattr(event, "get_extra"):
@@ -793,6 +794,7 @@ async def execute_persistent_subagent(
         contexts=contexts or None,
         max_steps=int(prov_settings.get("max_agent_step", 30)),
         tool_call_timeout=run_context.tool_call_timeout,
+        agent_hooks=agent_hooks,
         stream=prov_settings.get("streaming_response", False),
     )
     final_response = getattr(llm_resp, "completion_text", "") or ""

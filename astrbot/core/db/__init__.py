@@ -25,6 +25,7 @@ from astrbot.core.db.po import (
     ProviderStat,
     SessionProjectRelation,
     Stats,
+    SubAgentBackgroundRun,
     SubAgentInstance,
     WebChatThread,
 )
@@ -216,6 +217,60 @@ class BaseDatabase(abc.ABC):
     @abc.abstractmethod
     async def delete_subagent_instances_for_session(self, umo: str) -> None:
         """Delete sub-agent instances for a session UMO."""
+        ...
+
+    @abc.abstractmethod
+    async def create_subagent_background_run(
+        self,
+        *,
+        instance_id: str,
+        umo: str,
+        scope_type: str,
+        scope_id: str,
+        instance_name: str,
+        preset_name: str,
+        status: str,
+        input_text: str,
+        image_urls: list | None = None,
+        events: list | None = None,
+    ) -> SubAgentBackgroundRun:
+        """Create a persisted background run for a sub-agent instance."""
+        ...
+
+    @abc.abstractmethod
+    async def get_subagent_background_run(
+        self,
+        task_id: str,
+    ) -> SubAgentBackgroundRun | None:
+        """Get a sub-agent background run by task ID."""
+        ...
+
+    @abc.abstractmethod
+    async def get_latest_subagent_background_run(
+        self,
+        instance_id: str,
+    ) -> SubAgentBackgroundRun | None:
+        """Get the most recent background run for a sub-agent instance."""
+        ...
+
+    @abc.abstractmethod
+    async def update_subagent_background_run(
+        self,
+        task_id: str,
+        **kwargs,
+    ) -> SubAgentBackgroundRun | None:
+        """Update a sub-agent background run."""
+        ...
+
+    @abc.abstractmethod
+    async def append_subagent_background_run_event(
+        self,
+        task_id: str,
+        event: dict,
+        *,
+        max_events: int = 10,
+    ) -> SubAgentBackgroundRun | None:
+        """Append a recent event to a sub-agent background run."""
         ...
 
     @abc.abstractmethod

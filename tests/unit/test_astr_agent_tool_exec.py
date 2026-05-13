@@ -417,6 +417,55 @@ async def test_execute_persistent_subagent_passes_sanitized_explicit_and_event_i
 
 
 @pytest.mark.asyncio
+async def test_execute_persistent_subagent_passes_agent_hooks_to_tool_loop_agent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict = {}
+
+    async def _fake_get_current_chat_provider_id(_umo):
+        return "provider-id"
+
+    async def _fake_tool_loop_agent(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(completion_text="ok")
+
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AstrAgentContext",
+        lambda context, event: SimpleNamespace(context=context, event=event),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.astr_agent_tool_exec.AgentContextWrapper",
+        lambda context: ContextWrapper(context=context),
+    )
+    context = SimpleNamespace(
+        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
+        tool_loop_agent=_fake_tool_loop_agent,
+        get_config=lambda **_kwargs: {"provider_settings": {}},
+    )
+    event = _DummyEvent([])
+    event.get_extra = lambda key: context if key == "subagent_runtime_context" else None
+    instance = SimpleNamespace(
+        tools=[],
+        skills=[],
+        provider_id=None,
+        system_prompt="system",
+        system_prompt_delta=None,
+        token_usage=0,
+    )
+    hooks = object()
+
+    await execute_persistent_subagent(
+        event,
+        instance,
+        [{"role": "user", "content": "hello"}],
+        "hello",
+        agent_hooks=hooks,
+    )
+
+    assert captured["agent_hooks"] is hooks
+
+
+@pytest.mark.asyncio
 async def test_execute_persistent_subagent_injects_selected_skills_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ):
