@@ -105,6 +105,36 @@ class SubAgentInstance(TimestampMixin, SQLModel, table=True):
     )
 
 
+class SubAgentBackgroundRun(TimestampMixin, SQLModel, table=True):
+    __tablename__: str = "subagent_background_runs"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    task_id: str = Field(
+        max_length=64,
+        nullable=False,
+        unique=True,
+        default_factory=lambda: str(uuid.uuid4()),
+    )
+    instance_id: str = Field(max_length=64, nullable=False, index=True)
+    umo: str = Field(nullable=False, index=True)
+    scope_type: str = Field(max_length=32, nullable=False, index=True)
+    scope_id: str = Field(nullable=False, index=True)
+    instance_name: str = Field(max_length=128, nullable=False, index=True)
+    preset_name: str = Field(max_length=128, nullable=False, index=True)
+    status: str = Field(max_length=32, nullable=False, index=True)
+    input_text: str = Field(nullable=False, sa_type=Text)
+    image_urls: list = Field(default_factory=list, sa_type=JSON)
+    events: list = Field(default_factory=list, sa_type=JSON)
+    final_response: str | None = Field(default=None, sa_type=Text)
+    error_message: str | None = Field(default=None, sa_type=Text)
+    token_usage: int | None = Field(default=None)
+    completed_at: datetime | None = Field(default=None, index=True)
+
+
 class AgentGroupRun(TimestampMixin, SQLModel, table=True):
     __tablename__: str = "agent_group_runs"
 
@@ -190,9 +220,7 @@ class StateCheckpoint(TimestampMixin, SQLModel, table=True):
         primary_key=True,
         default_factory=lambda: str(uuid.uuid4()),
     )
-    owner_type: str = Field(
-        max_length=32, nullable=False, index=True
-    )
+    owner_type: str = Field(max_length=32, nullable=False, index=True)
     owner_id: str = Field(max_length=256, nullable=False, index=True)
     version: int = Field(default=1, nullable=False)
     status: str = Field(max_length=32, nullable=False, index=True)

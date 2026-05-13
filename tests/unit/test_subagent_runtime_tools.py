@@ -11,6 +11,7 @@ from astrbot.core.subagent_runtime import SubAgentRuntimeResult
 from astrbot.core.tools.subagent_runtime_tools import (
     CreateSubAgentTool,
     DeleteSubAgentTool,
+    GetSubAgentStatusTool,
     ListSubAgentPresetsTool,
     ListSubAgentsTool,
     ResetSubAgentTool,
@@ -24,7 +25,10 @@ def _wrapper(runtime_manager) -> ContextWrapper:
     plugin_context.subagent_runtime_manager = runtime_manager
     event = MagicMock()
     event.unified_msg_origin = "platform:private:user"
-    return ContextWrapper(context=SimpleNamespace(context=plugin_context, event=event))
+    return ContextWrapper(
+        context=SimpleNamespace(context=plugin_context, event=event),
+        tool_call_timeout=77,
+    )
 
 
 def _payload(result: str) -> dict:
@@ -253,6 +257,196 @@ async def test_run_subagent_returns_structured_success():
         "error": None,
     }
     manager.run_instance.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_background_returns_structured_submission_payload():
+    manager = MagicMock()
+    wrapper = _wrapper(manager)
+    manager.run_instance = AsyncMock(
+        return_value=SubAgentRuntimeResult.success(
+            {
+                "background_task": True,
+                "task_id": "task-1",
+                "status": "queued",
+                "metadata": {
+                    "instance_id": "inst-1",
+                    "name": "analyst",
+                    "version": 2,
+                },
+            }
+        )
+    )
+
+    result = _payload(
+        await RunSubAgentTool().call(
+            wrapper,
+            name="analyst",
+            input="summarize this",
+            background_task=True,
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "data": {
+            "background_task": True,
+            "task_id": "task-1",
+            "status": "queued",
+            "metadata": {
+                "instance_id": "inst-1",
+                "name": "analyst",
+                "version": 2,
+            },
+        },
+        "error": None,
+    }
+    manager.run_instance.assert_awaited_once_with(
+        wrapper.context.event,
+        "analyst",
+        "summarize this",
+        image_urls=None,
+        scope_type=None,
+        background_task=True,
+        tool_call_timeout=77,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_background_preserves_runtime_context_on_event():
+    manager = MagicMock()
+    manager.run_instance = AsyncMock(
+        return_value=SubAgentRuntimeResult.success(
+            {
+                "background_task": True,
+                "task_id": "task-1",
+                "status": "queued",
+                "metadata": {"instance_id": "inst-1", "name": "analyst", "version": 2},
+            }
+        )
+    )
+    plugin_context = MagicMock()
+    plugin_context.subagent_runtime_manager = manager
+
+    class EventWithExtras:
+        def __init__(self):
+            self.unified_msg_origin = "platform:private:user"
+            self._extras = {}
+
+        def get_extra(self, key):
+            return self._extras.get(key)
+
+        def set_extra(self, key, value):
+            self._extras[key] = value
+
+    event = EventWithExtras()
+    wrapper = ContextWrapper(context=SimpleNamespace(context=plugin_context, event=event))
+
+    result = _payload(
+        await RunSubAgentTool().call(
+            wrapper,
+            name="analyst",
+            input="summarize this",
+            background_task=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert event.get_extra("subagent_runtime_context") is plugin_context
+
+
+@pytest.mark.asyncio
+async def test_get_subagent_status_returns_structured_success():
+    manager = MagicMock()
+    wrapper = _wrapper(manager)
+    manager.get_instance_status = AsyncMock(
+        return_value=SubAgentRuntimeResult.success(
+            {
+                "instance": SimpleNamespace(
+                    instance_id="inst-1",
+                    name="analyst",
+                    preset_name="researcher",
+                    scope_type="conversation",
+                    scope_id="conv-1",
+                    version=3,
+                ),
+                "busy": True,
+                "background_run": {
+                    "task_id": "task-1",
+                    "status": "running",
+                    "created_at": "2026-05-12T10:00:00+00:00",
+                    "updated_at": "2026-05-12T10:01:00+00:00",
+                    "completed_at": None,
+                    "final_response": None,
+                    "error_message": None,
+                    "events": [
+                        {
+                            "timestamp": "2026-05-12T10:00:00+00:00",
+                            "type": "submitted",
+                            "message": "Background sub-agent run submitted.",
+                        },
+                        {
+                            "timestamp": "2026-05-12T10:00:01+00:00",
+                            "type": "tool_call",
+                            "message": "Called tool web_search.",
+                            "tool_name": "web_search",
+                        },
+                    ],
+                },
+            }
+        )
+    )
+
+    result = _payload(
+        await GetSubAgentStatusTool().call(
+            wrapper,
+            name="analyst",
+            scope_type="conversation",
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "data": {
+            "instance": {
+                "instance_id": "inst-1",
+                "name": "analyst",
+                "preset_name": "researcher",
+                "scope_type": "conversation",
+                "scope_id": "conv-1",
+                "version": 3,
+            },
+            "busy": True,
+            "background_run": {
+                "task_id": "task-1",
+                "status": "running",
+                "created_at": "2026-05-12T10:00:00+00:00",
+                "updated_at": "2026-05-12T10:01:00+00:00",
+                "completed_at": None,
+                "final_response": None,
+                "error_message": None,
+                "events": [
+                    {
+                        "timestamp": "2026-05-12T10:00:00+00:00",
+                        "type": "submitted",
+                        "message": "Background sub-agent run submitted.",
+                    },
+                    {
+                        "timestamp": "2026-05-12T10:00:01+00:00",
+                        "type": "tool_call",
+                        "message": "Called tool web_search.",
+                        "tool_name": "web_search",
+                    },
+                ],
+            },
+        },
+        "error": None,
+    }
+    manager.get_instance_status.assert_awaited_once_with(
+        wrapper.context.event,
+        "analyst",
+        scope_type="conversation",
+    )
 
 
 @pytest.mark.asyncio

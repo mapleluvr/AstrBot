@@ -1,9 +1,11 @@
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.subagent_runtime import (
     AMBIGUOUS_INSTANCE,
     INSTANCE_BUSY,
@@ -22,6 +24,7 @@ from astrbot.core.subagent_runtime import (
 class FakeDB:
     def __init__(self):
         self.instances = []
+        self.background_runs = []
         self.next_id = 1
         self.save_returns_none = False
         self.update_returns_none = False
@@ -30,6 +33,7 @@ class FakeDB:
         self.deleted_sessions = []
         self.deleted_conversations = []
         self.create_error = None
+        self.conversations_by_id = {}
 
     async def create_subagent_instance(self, **kwargs):
         if self.create_error is not None:
@@ -52,6 +56,12 @@ class FakeDB:
                 and instance.scope_id == scope_id
                 and instance.name == name
             ):
+                return instance
+        return None
+
+    async def get_subagent_instance_by_id(self, instance_id):
+        for instance in self.instances:
+            if instance.instance_id == instance_id:
                 return instance
         return None
 
@@ -110,6 +120,66 @@ class FakeDB:
 
     async def delete_subagent_instances_for_conversation(self, conversation_id):
         self.deleted_conversations.append(conversation_id)
+
+    async def get_conversation_by_id(self, cid):
+        return self.conversations_by_id.get(cid)
+
+    async def create_subagent_background_run(self, **kwargs):
+        now = datetime.now(timezone.utc)
+        payload = {
+            "task_id": f"task-{len(self.background_runs) + 1}",
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+            "final_response": None,
+            "error_message": None,
+            "token_usage": None,
+            "events": [],
+        }
+        payload.update(kwargs)
+        run = SimpleNamespace(**payload)
+        self.background_runs.append(run)
+        return run
+
+    async def get_subagent_background_run(self, task_id):
+        for run in self.background_runs:
+            if run.task_id == task_id:
+                return run
+        return None
+
+    async def get_latest_subagent_background_run(self, instance_id):
+        matches = [
+            run for run in self.background_runs if run.instance_id == instance_id
+        ]
+        return matches[-1] if matches else None
+
+    async def update_subagent_background_run(self, task_id, **kwargs):
+        run = await self.get_subagent_background_run(task_id)
+        if run is None:
+            return None
+        for key, value in kwargs.items():
+            setattr(run, key, value)
+        if "updated_at" not in kwargs:
+            run.updated_at = datetime.now(timezone.utc)
+        return run
+
+    async def append_subagent_background_run_event(
+        self,
+        task_id,
+        event,
+        *,
+        max_events=10,
+    ):
+        run = await self.get_subagent_background_run(task_id)
+        if run is None:
+            return None
+        events = list(getattr(run, "events", []) or [])
+        events.append(event)
+        if max_events > 0:
+            events = events[-max_events:]
+        run.events = events
+        run.updated_at = datetime.now(timezone.utc)
+        return run
 
 
 class FakePersonaManager:
@@ -236,20 +306,97 @@ def enabled_runtime_config(config):
 
 @pytest.mark.asyncio
 async def test_cleanup_for_session_deletes_persisted_session_instances():
-    runtime = manager()
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    created = await runtime.create_instance(
+        event,
+        "agent",
+        "researcher",
+        scope_type="session",
+    )
 
-    await runtime.cleanup_for_session("telegram:FriendMessage:user1")
+    await runtime.cleanup_for_session(event.unified_msg_origin)
 
-    assert runtime.db.deleted_sessions == ["telegram:FriendMessage:user1"]
+    assert runtime.db.deleted_instances == [created.data.instance_id]
+    assert runtime.db.instances == []
 
 
 @pytest.mark.asyncio
 async def test_cleanup_for_conversation_deletes_persisted_conversation_instances():
-    runtime = manager()
+    db = FakeDB()
+    runtime = manager_with_db(
+        db,
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        ),
+    )
+    event = FakeEvent()
+    db.conversations_by_id["conv-1"] = SimpleNamespace(user_id=event.unified_msg_origin)
+    created = await runtime.create_instance(event, "agent", "researcher")
 
-    await runtime.cleanup_for_conversation("conversation-1")
+    await runtime.cleanup_for_conversation("conv-1")
 
-    assert runtime.db.deleted_conversations == ["conversation-1"]
+    assert runtime.db.deleted_instances == [created.data.instance_id]
+    assert runtime.db.instances == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_for_session_skips_busy_instances_and_deletes_idle_ones():
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    busy = await runtime.create_instance(
+        event, "busy", "researcher", scope_type="session"
+    )
+    idle = await runtime.create_instance(
+        event, "idle", "researcher", scope_type="session"
+    )
+
+    lock = runtime.try_acquire_instance_lock(busy.data.instance_id)
+    assert lock.ok is True
+    try:
+        await runtime.cleanup_for_session(event.unified_msg_origin)
+    finally:
+        await lock.__aexit__(None, None, None)
+
+    assert runtime.db.deleted_instances == [idle.data.instance_id]
+    assert {instance.instance_id for instance in runtime.db.instances} == {
+        busy.data.instance_id
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_for_conversation_skips_busy_instances_and_deletes_idle_ones():
+    db = FakeDB()
+    runtime = manager_with_db(
+        db,
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        ),
+    )
+    event = FakeEvent()
+    db.conversations_by_id["conv-1"] = SimpleNamespace(user_id=event.unified_msg_origin)
+    busy = await runtime.create_instance(event, "busy", "researcher")
+    idle = await runtime.create_instance(event, "idle", "researcher")
+
+    lock = runtime.try_acquire_instance_lock(busy.data.instance_id)
+    assert lock.ok is True
+    try:
+        await runtime.cleanup_for_conversation("conv-1")
+    finally:
+        await lock.__aexit__(None, None, None)
+
+    assert runtime.db.deleted_instances == [idle.data.instance_id]
+    assert {instance.instance_id for instance in runtime.db.instances} == {
+        busy.data.instance_id
+    }
 
 
 @pytest.mark.asyncio
@@ -968,6 +1115,95 @@ async def test_mutations_return_busy_when_instance_is_locked():
 
 
 @pytest.mark.asyncio
+async def test_update_instance_blocks_run_startup_until_the_update_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager()
+    runtime.reload_from_config(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    created = await runtime.create_instance(event, "agent", "researcher")
+    created.data.provider_id = "provider-a"
+    created.data.history = [{"role": "user", "content": "persisted"}]
+    created.data.token_usage = 9
+    created.data.begin_dialogs_injected = True
+
+    update_started = asyncio.Event()
+    allow_update_to_finish = asyncio.Event()
+    run_started = asyncio.Event()
+    allow_run_to_finish = asyncio.Event()
+
+    async def fake_execute(event_arg, instance, messages, input_text, image_urls):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "hello"
+        assert image_urls is None
+        run_started.set()
+        await allow_run_to_finish.wait()
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 10,
+        }
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+
+    original_update = runtime.db.update_subagent_instance
+
+    async def blocked_update(instance_id, **kwargs):
+        update_started.set()
+        await allow_update_to_finish.wait()
+        return await original_update(instance_id, **kwargs)
+
+    monkeypatch.setattr(runtime.db, "update_subagent_instance", blocked_update)
+    update_task = asyncio.create_task(
+        runtime.update_instance(
+            event,
+            "agent",
+            updates={"provider_id": "provider-b"},
+        )
+    )
+
+    run_task = None
+    try:
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+
+        run_task = asyncio.create_task(runtime.run_instance(event, "agent", "hello"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert run_started.is_set() is False
+        assert runtime.is_instance_locked(created.data.instance_id) is False
+        assert runtime.db.updated_instances == []
+        assert runtime.db.instances[0].provider_id == "provider-a"
+
+        allow_update_to_finish.set()
+        update_result = await asyncio.wait_for(update_task, timeout=1)
+
+        assert update_result.ok is True
+        assert update_result.data.provider_id == "provider-b"
+        assert runtime.db.updated_instances == [
+            (created.data.instance_id, {"provider_id": "provider-b"})
+        ]
+
+        await asyncio.wait_for(run_started.wait(), timeout=1)
+        assert runtime.is_instance_locked(created.data.instance_id) is True
+        allow_run_to_finish.set()
+        run_result = await asyncio.wait_for(run_task, timeout=1)
+        assert run_result.ok is True
+    finally:
+        allow_update_to_finish.set()
+        allow_run_to_finish.set()
+        if run_task is not None and not run_task.done():
+            await asyncio.wait_for(run_task, timeout=1)
+        if not update_task.done():
+            await asyncio.wait_for(update_task, timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_update_instance_returns_not_found_when_db_update_returns_none():
     runtime = manager()
     runtime.reload_from_config(
@@ -1283,6 +1519,72 @@ async def test_run_instance_propagates_lookup_errors_and_busy_lock():
 
 
 @pytest.mark.asyncio
+async def test_run_instance_returns_not_found_when_deleted_before_lifecycle_lock(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    created = await runtime.create_instance(event, "agent", "researcher")
+
+    run_waiting = asyncio.Event()
+    allow_run_to_enter = asyncio.Event()
+    executed = asyncio.Event()
+    original_lifecycle_lock = runtime._instance_lifecycle_lock
+    intercepted = {"used": False}
+
+    class DelayedLifecycleLock:
+        def __init__(self, lock):
+            self._lock = lock
+            self._entered = False
+
+        async def __aenter__(self):
+            run_waiting.set()
+            await allow_run_to_enter.wait()
+            await self._lock.acquire()
+            self._entered = True
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            if self._entered:
+                self._lock.release()
+
+    def delayed_lifecycle_lock(instance_id):
+        lock = original_lifecycle_lock(instance_id)
+        if instance_id == created.data.instance_id and not intercepted["used"]:
+            intercepted["used"] = True
+            return DelayedLifecycleLock(lock)
+        return lock
+
+    async def fake_execute(event_arg, instance, messages, input_text, image_urls):
+        executed.set()
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 2,
+        }
+
+    monkeypatch.setattr(runtime, "_instance_lifecycle_lock", delayed_lifecycle_lock)
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+
+    run_task = asyncio.create_task(runtime.run_instance(event, "agent", "hello"))
+    await asyncio.wait_for(run_waiting.wait(), timeout=1)
+
+    deleted = await runtime.delete_instance(event, "agent")
+    assert deleted.ok is True
+
+    allow_run_to_enter.set()
+    result = await asyncio.wait_for(run_task, timeout=1)
+
+    assert result.ok is False
+    assert result.error.error_code == INSTANCE_NOT_FOUND
+    assert executed.is_set() is False
+
+
+@pytest.mark.asyncio
 async def test_run_instance_returns_version_conflict_when_history_save_is_stale():
     runtime = manager()
     runtime.reload_from_config(
@@ -1332,3 +1634,1157 @@ async def test_run_instance_catches_execution_error_and_releases_lock():
     assert result.error.message == "Sub-agent execution failed."
     assert result.error.details is None
     assert runtime.is_instance_locked(created.data.instance_id) is False
+
+
+@pytest.mark.asyncio
+async def test_run_instance_background_submits_task_reports_status_and_completes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    wake_calls = []
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "summarize this"
+        assert image_urls == ["https://example.com/a.png"]
+        assert agent_hooks is not None
+        await agent_hooks.on_tool_start(
+            None,
+            SimpleNamespace(name="web_search"),
+            {"query": "latest"},
+        )
+        started.set()
+        await release.wait()
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        image_urls=["https://example.com/a.png"],
+        background_task=True,
+        tool_call_timeout=77,
+    )
+
+    assert submitted.ok is True
+    assert submitted.data["background_task"] is True
+    assert submitted.data["task_id"] == "task-1"
+    assert submitted.data["status"] == "queued"
+    assert submitted.data["metadata"] == {
+        "instance_id": created.data.instance_id,
+        "name": "analyst",
+        "preset_name": "researcher",
+        "scope_type": "conversation",
+        "scope_id": "conv-1",
+        "version": 1,
+        "token_usage": 0,
+    }
+
+    second = await runtime.run_instance(
+        event,
+        "analyst",
+        "run again",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+    assert second.ok is False
+    assert second.error.error_code == INSTANCE_BUSY
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    status = await runtime.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["busy"] is True
+    assert status.data["background_run"]["task_id"] == submitted.data["task_id"]
+    assert status.data["background_run"]["status"] == "running"
+    assert any(
+        evt["type"] == "tool_call" and evt["tool_name"] == "web_search"
+        for evt in status.data["background_run"]["events"]
+    )
+
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    completed = await runtime.get_instance_status(event, "analyst")
+
+    assert completed.ok is True
+    assert completed.data["busy"] is False
+    assert completed.data["background_run"]["status"] == "completed"
+    assert completed.data["background_run"]["final_response"] == "done"
+    assert completed.data["background_run"]["error_message"] is None
+    assert completed.data["background_run"]["completed_at"] is not None
+    assert completed.data["background_run"]["events"][-1]["type"] == "completed"
+    assert runtime.db.instances[0].history[-1] == {
+        "role": "assistant",
+        "content": "done",
+    }
+    assert runtime.db.instances[0].token_usage == 3
+    assert wake_calls[0]["task_id"] == submitted.data["task_id"]
+    assert wake_calls[0]["result_text"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_completed_status_update_failure_does_not_downgrade_saved_run(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    await runtime.create_instance(event, "analyst", "researcher")
+    wake_calls = []
+    original_update = runtime.db.update_subagent_background_run
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def flaky_update(task_id, **kwargs):
+        if kwargs.get("status") == "completed":
+            raise RuntimeError("persist completed status failed")
+        return await original_update(task_id, **kwargs)
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime.db, "update_subagent_background_run", flaky_update)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+    assert submitted.ok is True
+
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    await asyncio.wait_for(task, timeout=1)
+
+    status = await runtime.get_instance_status(event, "analyst")
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["status"] != "failed"
+    assert runtime.db.instances[0].history[-1] == {
+        "role": "assistant",
+        "content": "done",
+    }
+    assert wake_calls[0]["result_text"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_completed_status_persistence_preserves_success_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    await runtime.create_instance(event, "analyst", "researcher")
+    wake_calls = []
+    original_update = runtime.db.update_subagent_background_run
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def flaky_update(task_id, **kwargs):
+        if kwargs.get("status") == "completed":
+            raise asyncio.CancelledError()
+        return await original_update(task_id, **kwargs)
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime.db, "update_subagent_background_run", flaky_update)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+    assert submitted.ok is True
+
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    status = await runtime.get_instance_status(event, "analyst")
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["status"] == "completed"
+    assert status.data["background_run"]["final_response"] == "done"
+    assert wake_calls[0]["result_text"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_restarted_manager_reconciles_completed_run_after_completed_status_write_failed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = FakeDB()
+    config = enabled_runtime_config(
+        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+    )
+    runtime = manager_with_db(db, config)
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    await runtime.create_instance(event, "analyst", "researcher")
+    original_update = db.update_subagent_background_run
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def flaky_update(task_id, **kwargs):
+        if kwargs.get("status") == "completed":
+            raise RuntimeError("persist completed status failed")
+        return await original_update(task_id, **kwargs)
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(db, "update_subagent_background_run", flaky_update)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        lambda run_context, **kwargs: asyncio.sleep(0),
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+    assert submitted.ok is True
+
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    await asyncio.wait_for(task, timeout=1)
+
+    restarted = manager_with_db(db, config)
+    status = await restarted.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["status"] == "completed"
+    assert status.data["background_run"]["final_response"] == "done"
+    assert db.instances[0].history[-1] == {"role": "assistant", "content": "done"}
+
+
+@pytest.mark.asyncio
+async def test_run_instance_background_marks_failed_run(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    wake_calls = []
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "summarize this"
+        assert image_urls == []
+        assert agent_hooks is not None
+        await agent_hooks.on_tool_start(
+            None,
+            SimpleNamespace(name="web_search"),
+            {"query": "latest"},
+        )
+        started.set()
+        await release.wait()
+        await agent_hooks.on_tool_end(
+            None,
+            SimpleNamespace(name="web_search"),
+            {"query": "latest"},
+            SimpleNamespace(
+                isError=True,
+                content=[SimpleNamespace(text="tool exploded")],
+            ),
+        )
+        raise RuntimeError("provider unavailable")
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+
+    assert submitted.ok is True
+    assert submitted.data["background_task"] is True
+    assert submitted.data["status"] == "queued"
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    status = await runtime.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["task_id"] == submitted.data["task_id"]
+    assert status.data["background_run"]["status"] == "failed"
+    assert status.data["background_run"]["final_response"] is None
+    assert status.data["background_run"]["error_message"] == "provider unavailable"
+    assert status.data["background_run"]["completed_at"] is not None
+    assert any(
+        evt["type"] == "tool_error" and evt["tool_name"] == "web_search"
+        for evt in status.data["background_run"]["events"]
+    )
+    assert status.data["background_run"]["events"][-1]["type"] == "failed"
+    assert runtime.db.instances[0].history == []
+    assert wake_calls[0]["task_id"] == submitted.data["task_id"]
+    assert wake_calls[0]["result_text"] == "provider unavailable"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_event_append_failure_does_not_fail_background_run(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    original_append = runtime._append_background_run_event
+
+    async def flaky_append(task_id, event_type, message, **details):
+        if event_type == "tool_call":
+            raise RuntimeError("append tool_call event failed")
+        await original_append(task_id, event_type, message, **details)
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "summarize this"
+        assert image_urls == []
+        assert agent_hooks is not None
+        await agent_hooks.on_tool_start(
+            None,
+            SimpleNamespace(name="web_search"),
+            {"query": "latest"},
+        )
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def fake_wake(run_context, **kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime, "_append_background_run_event", flaky_append)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+    )
+
+    assert submitted.ok is True
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    await asyncio.wait_for(task, timeout=1)
+
+    latest_run = await runtime.db.get_latest_subagent_background_run(
+        created.data.instance_id
+    )
+
+    assert latest_run is not None
+    assert latest_run.status == "completed"
+    assert latest_run.final_response == "done"
+
+
+@pytest.mark.asyncio
+async def test_completed_run_stays_completed_when_completed_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+    wake_calls = []
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "summarize this"
+        assert image_urls == []
+        assert agent_hooks is not None
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    original_append = runtime._append_background_run_event
+
+    async def flaky_append(task_id, event_type, message, **details):
+        if event_type == "completed":
+            raise RuntimeError("append completed event failed")
+        await original_append(task_id, event_type, message, **details)
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime, "_append_background_run_event", flaky_append)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+
+    assert submitted.ok is True
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    await asyncio.wait_for(task, timeout=1)
+
+    status = await runtime.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["status"] == "completed"
+    assert status.data["background_run"]["final_response"] == "done"
+    assert wake_calls[0]["result_text"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_durable_completion_does_not_downgrade_run(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    original_append = runtime._append_background_run_event
+
+    async def flaky_append(task_id, event_type, message, **details):
+        if event_type == "completed":
+            raise asyncio.CancelledError()
+        await original_append(task_id, event_type, message, **details)
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "summarize this"
+        assert image_urls == []
+        assert agent_hooks is not None
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def fake_wake(run_context, **kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime, "_append_background_run_event", flaky_append)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+    )
+
+    assert submitted.ok is True
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    latest_run = await runtime.db.get_latest_subagent_background_run(
+        created.data.instance_id
+    )
+
+    assert latest_run is not None
+    assert latest_run.status == "completed"
+    assert latest_run.final_response == "done"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_safe_event_append_propagates_and_marks_failed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    await runtime.create_instance(event, "analyst", "researcher")
+    started = asyncio.Event()
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        started.set()
+        await agent_hooks.on_tool_start(
+            None,
+            SimpleNamespace(name="web_search"),
+            {"query": "latest"},
+        )
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    original_append = runtime._append_background_run_event
+
+    async def cancelling_append(task_id, event_type, message, **details):
+        if event_type == "tool_call":
+            raise asyncio.CancelledError()
+        await original_append(task_id, event_type, message, **details)
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime, "_append_background_run_event", cancelling_append)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        lambda run_context, **kwargs: asyncio.sleep(0),
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+    assert submitted.ok is True
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    status = await runtime.get_instance_status(event, "analyst")
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["status"] == "failed"
+    assert "cancelled" in status.data["background_run"]["error_message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_instance_releases_lock_when_setup_raises_before_execution():
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    created = await runtime.create_instance(event, "agent", "researcher")
+
+    def raising_get_extra(key):
+        raise RuntimeError("setup failed before execution")
+
+    event.get_extra = raising_get_extra
+
+    result = await runtime.run_instance(
+        event,
+        "agent",
+        "hello",
+        background_task=True,
+    )
+
+    assert result.ok is False
+    assert result.error.error_code == "subagent_execution_failed"
+    assert runtime.is_instance_locked(created.data.instance_id) is False
+
+
+@pytest.mark.asyncio
+async def test_run_instance_background_submission_failure_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    def fail_create_task(coro):
+        coro.close()
+        raise RuntimeError("scheduler failed")
+
+    monkeypatch.setattr(
+        "astrbot.core.subagent_runtime.asyncio.create_task",
+        fail_create_task,
+    )
+
+    result = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+    )
+
+    assert result.ok is False
+    assert result.error.error_code == "subagent_execution_failed"
+    assert runtime.is_instance_locked(created.data.instance_id) is False
+
+    latest_run = await runtime.db.get_latest_subagent_background_run(
+        created.data.instance_id
+    )
+
+    assert latest_run is not None
+    assert latest_run.status == "failed"
+    assert latest_run.error_message == "scheduler failed"
+    assert latest_run.completed_at is not None
+    assert latest_run.events[-1]["type"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_instance_background_submission_failure_releases_lock_when_failed_event_append_raises(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    async def fail_failed_event(task_id, event_type, message, **details):
+        raise RuntimeError("append failed event failed")
+
+    def fail_create_task(coro):
+        coro.close()
+        raise RuntimeError("scheduler failed")
+
+    monkeypatch.setattr(
+        "astrbot.core.subagent_runtime.asyncio.create_task",
+        fail_create_task,
+    )
+    monkeypatch.setattr(runtime, "_append_background_run_event", fail_failed_event)
+
+    result = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+    )
+
+    assert result.ok is False
+    assert result.error.error_code == "subagent_execution_failed"
+    assert runtime.is_instance_locked(created.data.instance_id) is False
+
+    latest_run = await runtime.db.get_latest_subagent_background_run(
+        created.data.instance_id
+    )
+
+    assert latest_run is not None
+    assert latest_run.status == "failed"
+    assert latest_run.error_message == "scheduler failed"
+
+
+@pytest.mark.asyncio
+async def test_run_instance_background_cancellation_marks_failed_run(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+    wake_calls = []
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert instance.instance_id == created.data.instance_id
+        assert input_text == "summarize this"
+        assert image_urls == []
+        assert agent_hooks is not None
+        started.set()
+        await blocked.wait()
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+    )
+
+    assert submitted.ok is True
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    latest_run = await runtime.db.get_latest_subagent_background_run(
+        created.data.instance_id
+    )
+    assert latest_run is not None
+    assert latest_run.status == "running"
+
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    status = await runtime.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["status"] == "failed"
+    assert "cancel" in status.data["background_run"]["error_message"].lower()
+    assert status.data["background_run"]["events"][-1]["type"] == "failed"
+    assert runtime.is_instance_locked(created.data.instance_id) is False
+    assert "cancel" in wake_calls[0]["result_text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_failure_status_persistence_error_still_wakes_main_agent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    await runtime.create_instance(event, "analyst", "researcher")
+    wake_calls = []
+    original_update = runtime.db.update_subagent_background_run
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        raise RuntimeError("provider unavailable")
+
+    async def flaky_update(task_id, **kwargs):
+        if kwargs.get("status") == "failed":
+            raise RuntimeError("persist failed status failed")
+        return await original_update(task_id, **kwargs)
+
+    async def fake_wake(run_context, **kwargs):
+        wake_calls.append({"run_context": run_context, **kwargs})
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(runtime.db, "update_subagent_background_run", flaky_update)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+        tool_call_timeout=77,
+    )
+    assert submitted.ok is True
+
+    task = runtime._background_tasks[submitted.data["task_id"]]
+    await asyncio.wait_for(task, timeout=1)
+
+    assert wake_calls[0]["result_text"] == "provider unavailable"
+
+
+@pytest.mark.asyncio
+async def test_run_instance_background_removes_finished_task_from_active_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    plugin_context = SimpleNamespace()
+    event.get_extra = lambda key: (
+        plugin_context if key == "subagent_runtime_context" else None
+    )
+    await runtime.create_instance(event, "analyst", "researcher")
+
+    async def fake_execute(
+        event_arg,
+        instance,
+        messages,
+        input_text,
+        image_urls,
+        *,
+        agent_hooks=None,
+    ):
+        assert event_arg is event
+        assert agent_hooks is not None
+        return {
+            "final_response": "done",
+            "history": [*messages, {"role": "assistant", "content": "done"}],
+            "token_usage": 3,
+        }
+
+    async def fake_wake(run_context, **kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_execute_instance", fake_execute)
+    monkeypatch.setattr(
+        FunctionToolExecutor,
+        "_wake_main_agent_for_background_result",
+        fake_wake,
+        raising=False,
+    )
+
+    submitted = await runtime.run_instance(
+        event,
+        "analyst",
+        "summarize this",
+        background_task=True,
+    )
+
+    task_id = submitted.data["task_id"]
+    task = runtime._background_tasks[task_id]
+    await asyncio.wait_for(task, timeout=1)
+
+    assert task_id not in runtime._background_tasks
+
+
+@pytest.mark.asyncio
+async def test_get_instance_status_reconciles_stale_background_run_state():
+    runtime = manager(
+        enabled_runtime_config(
+            {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+        )
+    )
+    event = FakeEvent()
+    created = await runtime.create_instance(event, "analyst", "researcher")
+
+    stale_run = await runtime.db.create_subagent_background_run(
+        instance_id=created.data.instance_id,
+        umo=created.data.umo,
+        scope_type=created.data.scope_type,
+        scope_id=created.data.scope_id,
+        instance_name=created.data.name,
+        preset_name=created.data.preset_name,
+        status="running",
+        input_text="summarize this",
+        image_urls=[],
+        events=[
+            runtime._background_event("queued", "Background run queued."),
+            runtime._background_event("started", "Background run started."),
+        ],
+    )
+
+    assert stale_run.task_id not in runtime._background_tasks
+
+    status = await runtime.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["busy"] is False
+    assert status.data["background_run"]["task_id"] == stale_run.task_id
+    assert status.data["background_run"]["status"] == "failed"
+    assert "stale" in status.data["background_run"]["error_message"].lower()
+    assert status.data["background_run"]["events"][-1]["type"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_get_instance_status_retries_durable_completion_when_override_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = FakeDB()
+    config = enabled_runtime_config(
+        {"agents": [{"name": "researcher", "runtime_mode": "persistent"}]}
+    )
+    runtime = manager_with_db(db, config)
+    event = FakeEvent()
+    created = await runtime.create_instance(event, "analyst", "researcher")
+    run = await db.create_subagent_background_run(
+        instance_id=created.data.instance_id,
+        umo=created.data.umo,
+        scope_type=created.data.scope_type,
+        scope_id=created.data.scope_id,
+        instance_name=created.data.name,
+        preset_name=created.data.preset_name,
+        status="running",
+        input_text="summarize this",
+        image_urls=[],
+        events=[],
+    )
+    run.final_response = "done"
+    run.token_usage = 3
+    run.completed_at = datetime.now(timezone.utc)
+    runtime._background_run_terminal_overrides[run.task_id] = {
+        "status": "completed",
+        "final_response": "done",
+        "error_message": None,
+        "token_usage": 3,
+        "completed_at": run.completed_at,
+        "updated_at": run.completed_at,
+    }
+    persisted = []
+    original_update = db.update_subagent_background_run
+
+    async def tracking_update(task_id, **kwargs):
+        persisted.append(kwargs)
+        return await original_update(task_id, **kwargs)
+
+    monkeypatch.setattr(db, "update_subagent_background_run", tracking_update)
+
+    status = await runtime.get_instance_status(event, "analyst")
+
+    assert status.ok is True
+    assert status.data["background_run"]["status"] == "completed"
+    assert any(kwargs.get("status") == "completed" for kwargs in persisted)

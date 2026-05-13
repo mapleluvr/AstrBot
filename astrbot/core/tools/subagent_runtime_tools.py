@@ -172,6 +172,20 @@ def _runtime_run_payload(result: SubAgentRuntimeResult) -> str:
     return _json_result(True, data=_json_safe(result.data))
 
 
+def _runtime_status_payload(result: SubAgentRuntimeResult) -> str:
+    if not result.ok:
+        return _runtime_error_payload(result)
+    data = result.data or {}
+    return _json_result(
+        True,
+        data={
+            "instance": _instance_payload(data.get("instance")),
+            "busy": bool(data.get("busy", False)),
+            "background_run": _json_safe(data.get("background_run")),
+        },
+    )
+
+
 @builtin_tool
 @dataclass
 class ListSubAgentPresetsTool(FunctionTool[AstrAgentContext]):
@@ -298,6 +312,10 @@ class RunSubAgentTool(FunctionTool[AstrAgentContext]):
                     "items": {"type": "string"},
                     "description": "Optional image URLs to include with the sub-agent input.",
                 },
+                "background_task": {
+                    "type": "boolean",
+                    "description": "Submit the sub-agent run in the background and return a task ID.",
+                },
             },
             "required": ["name", "input"],
         }
@@ -310,8 +328,10 @@ class RunSubAgentTool(FunctionTool[AstrAgentContext]):
         if manager is None:
             return _runtime_unavailable()
         event = context.context.event
+        background_task_requested = bool(kwargs.get("background_task", False))
         had_runtime_context = False
         previous_runtime_context = None
+        result: SubAgentRuntimeResult | None = None
         if hasattr(event, "get_extra") and hasattr(event, "set_extra"):
             previous_runtime_context = event.get_extra("subagent_runtime_context")
             had_runtime_context = previous_runtime_context is not None
@@ -324,16 +344,56 @@ class RunSubAgentTool(FunctionTool[AstrAgentContext]):
                 image_urls=kwargs.get("image_urls"),
                 scope_type=kwargs.get("scope_type"),
                 background_task=kwargs.get("background_task", False),
+                tool_call_timeout=context.tool_call_timeout,
             )
         finally:
-            if hasattr(event, "set_extra"):
+            preserve_runtime_context = (
+                background_task_requested
+                and result is not None
+                and result.ok
+                and bool(_value(result.data, "background_task"))
+            )
+            if hasattr(event, "set_extra") and not preserve_runtime_context:
                 if had_runtime_context:
                     event.set_extra(
                         "subagent_runtime_context", previous_runtime_context
                     )
                 elif hasattr(event, "_extras"):
                     event._extras.pop("subagent_runtime_context", None)
+        assert result is not None
         return _runtime_run_payload(result)
+
+
+@builtin_tool
+@dataclass
+class GetSubAgentStatusTool(FunctionTool[AstrAgentContext]):
+    name: str = "get_subagent_status"
+    description: str = "Get the latest background run status and recent events for a persistent sub-agent instance."
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Sub-agent instance name."},
+                "scope_type": {
+                    "type": "string",
+                    "enum": ["conversation", "session"],
+                    "description": "Optional instance scope.",
+                },
+            },
+            "required": ["name"],
+        }
+    )
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+        manager = _get_runtime_manager(context)
+        if manager is None:
+            return _runtime_unavailable()
+        result = await manager.get_instance_status(
+            context.context.event,
+            kwargs.get("name"),
+            scope_type=kwargs.get("scope_type"),
+        )
+        return _runtime_status_payload(result)
 
 
 @builtin_tool
@@ -447,6 +507,7 @@ SUBAGENT_RUNTIME_MANAGEMENT_TOOLS = (
     CreateSubAgentTool,
     ListSubAgentsTool,
     RunSubAgentTool,
+    GetSubAgentStatusTool,
     UpdateSubAgentTool,
     ResetSubAgentTool,
     DeleteSubAgentTool,
@@ -456,6 +517,7 @@ SUBAGENT_RUNTIME_MANAGEMENT_TOOLS = (
 __all__ = [
     "CreateSubAgentTool",
     "DeleteSubAgentTool",
+    "GetSubAgentStatusTool",
     "ListSubAgentPresetsTool",
     "ListSubAgentsTool",
     "ResetSubAgentTool",

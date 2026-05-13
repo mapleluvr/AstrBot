@@ -53,4 +53,10 @@ Click the "Add SubAgent" button:
 SubAgent orchestration is currently an **experimental feature** and not yet stable.
 
 1. Skills of personas cannot be isolated at this time.
-2. SubAgent conversation histories are not currently saved.
+2. Legacy handoff-style SubAgent runs do not keep an independent persisted conversation history. Persistent SubAgent instances created through the runtime tools do retain persisted conversation state and background run status.
+
+## Persistent Background Runs
+
+Persistent sub-agent instances can accept background submissions. When you call `run_subagent(name="analyst", input="...", background_task=true)`, the tool returns immediately with a `task_id` and queued status instead of waiting for the final response.
+
+Use `get_subagent_status(name="analyst")` to check whether the instance is currently busy and to inspect the latest background run status, final result, and recent events. A single persistent instance still runs at most one active task at a time. If you need true parallel execution, create multiple persistent instances and run them separately.

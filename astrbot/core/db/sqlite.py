@@ -27,6 +27,7 @@ from astrbot.core.db.po import (
     ProviderStat,
     SessionProjectRelation,
     SQLModel,
+    SubAgentBackgroundRun,
     SubAgentInstance,
     WebChatThread,
 )
@@ -455,6 +456,136 @@ class SQLiteDatabase(BaseDatabase):
                 await session.execute(
                     delete(SubAgentInstance).where(col(SubAgentInstance.umo) == umo),
                 )
+
+    async def create_subagent_background_run(
+        self,
+        *,
+        instance_id: str,
+        umo: str,
+        scope_type: str,
+        scope_id: str,
+        instance_name: str,
+        preset_name: str,
+        status: str,
+        input_text: str,
+        image_urls: list | None = None,
+        events: list | None = None,
+    ) -> SubAgentBackgroundRun:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                run = SubAgentBackgroundRun(
+                    instance_id=instance_id,
+                    umo=umo,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    instance_name=instance_name,
+                    preset_name=preset_name,
+                    status=status,
+                    input_text=input_text,
+                    image_urls=image_urls or [],
+                    events=events or [],
+                )
+                session.add(run)
+                await session.flush()
+                await session.refresh(run)
+                return run
+
+    async def get_subagent_background_run(
+        self,
+        task_id: str,
+    ) -> SubAgentBackgroundRun | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(SubAgentBackgroundRun).where(
+                    col(SubAgentBackgroundRun.task_id) == task_id,
+                ),
+            )
+            return result.scalar_one_or_none()
+
+    async def get_latest_subagent_background_run(
+        self,
+        instance_id: str,
+    ) -> SubAgentBackgroundRun | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(SubAgentBackgroundRun)
+                .where(col(SubAgentBackgroundRun.instance_id) == instance_id)
+                .order_by(
+                    desc(SubAgentBackgroundRun.created_at),
+                    desc(SubAgentBackgroundRun.id),
+                )
+                .limit(1),
+            )
+            return result.scalar_one_or_none()
+
+    async def update_subagent_background_run(
+        self,
+        task_id: str,
+        **kwargs,
+    ) -> SubAgentBackgroundRun | None:
+        mutable_fields = {
+            "status",
+            "final_response",
+            "error_message",
+            "token_usage",
+            "completed_at",
+        }
+        invalid_fields = set(kwargs).difference(mutable_fields)
+        if invalid_fields:
+            raise ValueError(
+                "Cannot update protected subagent background run fields: "
+                f"{', '.join(sorted(invalid_fields))}",
+            )
+
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                if kwargs:
+                    await session.execute(
+                        update(SubAgentBackgroundRun)
+                        .where(col(SubAgentBackgroundRun.task_id) == task_id)
+                        .values(**kwargs)
+                        .execution_options(synchronize_session="fetch"),
+                    )
+                result = await session.execute(
+                    select(SubAgentBackgroundRun).where(
+                        col(SubAgentBackgroundRun.task_id) == task_id,
+                    ),
+                )
+                return result.scalar_one_or_none()
+
+    async def append_subagent_background_run_event(
+        self,
+        task_id: str,
+        event: dict,
+        *,
+        max_events: int = 10,
+    ) -> SubAgentBackgroundRun | None:
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                result = await session.execute(
+                    select(SubAgentBackgroundRun).where(
+                        col(SubAgentBackgroundRun.task_id) == task_id,
+                    ),
+                )
+                run = result.scalar_one_or_none()
+                if run is None:
+                    return None
+
+                events = list(run.events or [])
+                events.append(event)
+                if max_events > 0:
+                    events = events[-max_events:]
+
+                run.events = events
+                session.add(run)
+                await session.flush()
+                await session.refresh(run)
+                return run
 
     # ====
     # Agent Group Run Management
